@@ -1,4 +1,10 @@
-# [Playstation](https://en.wikipedia.org/wiki/PlayStation_(console)) for [MiSTer Platform](https://github.com/MiSTer-devel/Main_MiSTer/wiki)
+# [Playstation](https://en.wikipedia.org/wiki/PlayStation_(console)) for SoCkit Platform
+
+Ported from https://github.com/MiSTer-devel/PSX_MiSTer
+
+Video Ok, Audio need to be fixed.
+
+Follows original README.
 
 ## Hardware Requirements
 SDRAM of any size is required.
@@ -113,7 +119,8 @@ The following pad types are emulated by the core and can be independently assign
    - II -> Right Analog Down, Rectangle (100% pressed), L2 (100% pressed)
    - L -> L1 (100% pressed)
    - R -> R1
-   
+  
+
 SNAC can be selected for each port and will support gamepads and memory cards on the corresponding slot.
 When SNAC is enabled for a slot, the emulated gamepad/memory for this slot is disconnected.
 
@@ -157,7 +164,7 @@ GTE    : 80%
 
 MDEC   : 90%
 - timing slightly too fast (4996/5376)
- 
+
 CD     : 90%
 
 SPU    : 90%
