@@ -2,8 +2,6 @@
 
 Ported from https://github.com/MiSTer-devel/PSX_MiSTer
 
-Video Ok, Audio need to be fixed.
-
 Follows original README.
 
 ## Hardware Requirements

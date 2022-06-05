@@ -89,8 +89,8 @@ module sys_top
 	output 		  VGA_SYNC_N,
 
 	/////////// AUDIO //////////
-	// output		  AUDIO_L,
-	// output		  AUDIO_R,
+	output		  AUDIO_L,
+	output		  AUDIO_R,
 	// output		  AUDIO_SPDIF,
 
 	//DE10-standard / DE1-soc kit implementation for on-board Audio CODEC
@@ -143,10 +143,11 @@ module sys_top
 	////////// MB SWITCH ////////
 	//DE10-standard / DE1-soc kit / Arrow SoCKit board implementation
 	//input   [3:0] SW,
-	inout   [3:0] SW,
+	inout   [3:0] SW,				// TO BE FIXED
 
 	////////// MB LED ///////////
-	output  [7:0] LED
+	//output  [7:0] LED
+	output LED0
 
 	///////// USER IO ///////////
 	//inout   [6:0] USER_IO
@@ -178,8 +179,8 @@ wire        ADC_SDO;
 wire        ADC_SDI;
 wire        ADC_CONVST;
 
-wire		AUDIO_L;
-wire		AUDIO_R;
+//wire		AUDIO_L;
+//wire		AUDIO_R;
 wire		AUDIO_SPDIF;
 
 wire        SD_SPI_CS;
@@ -196,6 +197,10 @@ wire         SDIO_CMD;
 wire         SDIO_CLK;
 
 wire   [6:0] USER_IO;
+
+wire   [7:0] LED;
+
+assign LED0 = LED[0];
 
 
 //////////////////////  Secondary SD  ///////////////////////////////////
@@ -1530,6 +1535,7 @@ alsa alsa
 );
 
 //// DE10-Standard / DE1-SoC / SoCkit Audio CODEC i2c ////
+
 assign AUD_MUTE = 1'b1;
 
 // I2C audio config
