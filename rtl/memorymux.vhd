@@ -470,9 +470,6 @@ begin
                   reqsize_buf     <= mem_reqsize;
                   writeMask_buf   <= mem_writeMask;
                   
-                  rotate32        <= '0';
-                  rotate16        <= '0';
-                  
                   data_cd         <= (others => '0');
                   data_spu        <= (others => '0');
                   
@@ -576,13 +573,21 @@ begin
                                  bus_spu_addr <= mem_addressData(9 downto 0);
                                  bus_spu_read <= '1';
                                  waitcnt      <= 15;
+                                 rotate16     <= '1';
                               else
                                  state   <= SPU_WRITE;
                               end if;
                            else  
                               state <= BUSACTION;
-                              if (bus_dma_read   = '1' and mem_reqsize /= 4) then rotate32 <= '1'; end if;
-                              if (bus_memc_read  = '1' and mem_reqsize /= 2) then rotate16 <= '1'; end if;
+                              if (bus_memc_read  = '1') then rotate32 <= '1'; end if;
+                              if (bus_pad_read   = '1') then rotate16 <= '1'; end if;
+                              if (bus_sio_read   = '1') then rotate16 <= '1'; end if;
+                              if (bus_memc2_read = '1') then rotate32 <= '1'; end if;
+                              if (bus_dma_read   = '1') then rotate32 <= '1'; end if;
+                              if (bus_tmr_read   = '1') then rotate32 <= '1'; end if;
+                              if (bus_irq_read   = '1') then rotate32 <= '1'; end if;
+                              if (bus_gpu_read   = '1') then rotate32 <= '1'; end if;
+                              if (bus_mdec_read  = '1') then rotate32 <= '1'; end if;
                            end if;
                         end if;
             
@@ -634,6 +639,8 @@ begin
                   
                when BUSACTION =>
                   if (bus_stall = '0') then
+                     rotate32 <= '0';
+                     rotate16 <= '0';
                      if (rotate32 = '1') then
                         case (addressData_buf(1 downto 0)) is
                            when "00" => mem_dataRead_buf <= dataFromBusses;
@@ -703,12 +710,12 @@ begin
                   end case;  
                   
                -- SPU
-               when SPU_WRITE =>  -- todo: single byte write is special
+               when SPU_WRITE =>
                   byteStep    <= byteStep + 2;
                   bus_spu_addr <= addressData_buf(9 downto 2) & byteStep;
                   case (byteStep) is
-                     when "00" => if (writeMask_buf(1 downto 0) /= "00") then bus_spu_write <= '1'; bus_spu_dataWrite <= dataWrite_buf(15 downto  0); end if;
-                     when "10" => if (writeMask_buf(3 downto 2) /= "00") then bus_spu_write <= '1'; bus_spu_dataWrite <= dataWrite_buf(31 downto 16); end if; state <= BUSACTION; 
+                     when "00" => if (writeMask_buf(0) = '1') then bus_spu_write <= '1'; bus_spu_dataWrite <= dataWrite_buf(15 downto  0); end if;
+                     when "10" => if (writeMask_buf(2) = '1') then bus_spu_write <= '1'; bus_spu_dataWrite <= dataWrite_buf(31 downto 16); end if; state <= BUSACTION; 
                      when others => null;
                   end case;
                   

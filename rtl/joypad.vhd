@@ -231,7 +231,7 @@ begin
 
             -- bus read
             if (bus_read = '1') then
-               case (bus_addr(3 downto 0)) is
+               case (bus_addr(3 downto 1) & '0') is
                   when x"0" =>
                      if (receiveFilled = '1') then
                         receiveFilled <= '0';
@@ -240,12 +240,15 @@ begin
                         bus_dataRead  <= (others => '1');
                      end if;
                      
+                  when x"2" =>
+                     bus_dataRead  <= x"0000" & receiveBuffer & receiveBuffer;
+                     
                   when x"4" =>
                      bus_dataRead <= JOY_STAT;
                      JOY_STAT_ACK <= '0';
                      
                   when x"8" =>
-                     bus_dataRead <= x"0000" & JOY_MODE;
+                     bus_dataRead <= JOY_CTRL & JOY_MODE;
                      
                   when x"A" =>
                      bus_dataRead <= x"0000" & JOY_CTRL;                  
@@ -270,9 +273,9 @@ begin
                      
                   when x"8" =>
                      if (bus_writeMask(1 downto 0) /= "00") then
-                        JOY_MODE <= bus_dataWrite(15 downto 0);
+                        JOY_MODE <= "0000000" & bus_dataWrite(8) & "00" & bus_dataWrite(5 downto 0);
                      elsif (bus_writeMask(3 downto 2) /= "00") then
-                        JOY_CTRL <= bus_dataWrite(31 downto 16);
+                        JOY_CTRL <= "00" & bus_dataWrite(29 downto 23) & "0" & bus_dataWrite(21) & "0" & bus_dataWrite(19 downto 16);
                         
                         if (bus_dataWrite(22) = '1') then -- reset
                            transmitFilled  <= '0';
