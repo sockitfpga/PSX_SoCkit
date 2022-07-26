@@ -1,4 +1,4 @@
-# [Playstation](https://en.wikipedia.org/wiki/PlayStation_(console)) for SoCkit Platform
+# [Playstation](https://en.wikipedia.org/wiki/PlayStation_(console)) for [SoCkit (MiSTer) Platform](https://github.com/sockitfpga/MiSTer_SoCkit) 
 
 Ported from https://github.com/MiSTer-devel/PSX_MiSTer
 
