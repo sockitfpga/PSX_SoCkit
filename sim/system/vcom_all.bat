@@ -2,11 +2,17 @@
 vcom -93 -quiet -work  sim/tb ^
 src/tb/globals.vhd
 
+vcom -93 -quiet -work sim/mem ^
+../system/src/mem/dpram.vhd ^
+../system/src/mem/RamMLAB.vhd
+
+vcom -93 -quiet -work sim/psx ^
+../system/src/mem/dpram.vhd
+
 vcom -93 -quiet -work  sim/mem ^
-../../rtl/dpram.vhd ^
-../../rtl/RamMLAB.vhd ^
 ../../rtl/SyncFifo.vhd ^
 ../../rtl/SyncFifoFallThrough.vhd ^
+../../rtl/SyncFifoFallThroughMLAB.vhd ^
 ../../rtl/SyncRam.vhd
 
 vcom -quiet -work  sim/rs232 ^
@@ -23,7 +29,6 @@ vcom -quiet -work sim/reg_map ^
 src/reg_map/reg_tb.vhd
 
 vcom -2008 -quiet -work sim/psx ^
-../../rtl/dpram.vhd ^
 ../../rtl/export.vhd ^
 ../../rtl/divider.vhd ^
 ../../rtl/pGPU.vhd ^
@@ -38,6 +43,7 @@ vcom -2008 -quiet -work sim/psx ^
 ../../rtl/gpu_poly.vhd ^
 ../../rtl/gpu_pixelpipeline.vhd ^
 ../../rtl/gpu_overlay.vhd ^
+../../rtl/gpu_dither.vhd ^
 ../../rtl/gpu_videoout_async.vhd ^
 ../../rtl/gpu_videoout_sync.vhd ^
 ../../rtl/gpu_crosshair.vhd ^
@@ -66,8 +72,8 @@ vcom -2008 -quiet -work sim/psx ^
 ../../rtl/spu_ram.vhd ^
 ../../rtl/spu_gauss.vhd ^
 ../../rtl/spu.vhd ^
-../../rtl/cpu.vhd ^
 ../../rtl/datacache.vhd ^
+../../rtl/cpu.vhd ^
 ../../rtl/memorymux.vhd ^
 ../../rtl/memcard.vhd ^
 ../../rtl/statemanager.vhd ^

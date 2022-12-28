@@ -47,10 +47,17 @@ module sdram
 	input      [15:0]  ch1_din,     // data input from cpu
 	input              ch1_req,     // request
 	input              ch1_rnw,     // 1 - read, 0 - write
-	input              ch1_128,     // 1 - read 128bit, 0 - read 32 bit
+	input              ch1_dma,     // 1 - read 128bit for dma
+	input      [ 1:0]  ch1_cntDMA,  // count of words-1 for dma read
+	input              ch1_cache,   // 1 - read 128bit for cache
 	output reg         ch1_ready,
-	output reg         ch1_reqprocessed,
-                      
+	output reg [ 3:0]  cache_wr,    
+	output reg [31:0]  cache_data,  
+	output reg [ 7:0]  cache_addr,  
+	output reg         dma_wr,  
+	output reg         dma_reqprocessed,  
+	output reg [31:0]  dma_data,  
+
 	input      [26:0]  ch2_addr,    // 25 bit address for 8bit mode. addr[0] = 0 for 16bit mode for correct operations.
 	output reg [31:0]  ch2_dout,    // data output to cpu
 	input      [31:0]  ch2_din,     // data input from cpu
@@ -65,7 +72,12 @@ module sdram
 	input              ch3_req,     // request
 	input              ch3_rnw,     // 1 - read, 0 - write
 	input      [3:0]   ch3_be,
-	output reg         ch3_ready
+	output reg         ch3_ready,
+
+	input      [26:0]  dmafifo_adr,   
+	input      [31:0]  dmafifo_data, 
+	input              dmafifo_empty, 
+	output reg         dmafifo_read
 );
 
 assign SDRAM_nCS  = chip;
@@ -75,10 +87,11 @@ assign SDRAM_nWE  = command[0];
 assign SDRAM_CKE  = 1;
 assign {SDRAM_DQMH,SDRAM_DQML} = SDRAM_A[12:11];
 
-
-// Burst length = 8
 localparam BURST_LENGTH        = 8;
-localparam BURST_CODE          = (BURST_LENGTH == 8) ? 3'b011 : (BURST_LENGTH == 4) ? 3'b010 : (BURST_LENGTH == 2) ? 3'b001 : 3'b000;  // 000=1, 001=2, 010=4, 011=8
+//(BURST_LENGTH == 8) ? 3'b011 : (BURST_LENGTH == 4) ? 3'b010 : (BURST_LENGTH == 2) ? 3'b001 : 3'b000;  // 000=1, 001=2, 010=4, 011=8
+// we do 4 bursts of 2 words(16bit) for every read. The reason is that a burst of 8 will wrap inside the page. e.g. reading address 6,7,8,.. is not possible, it will read 6,7,0,.. instead
+// as bursts of 2 can be done back-to-back, this does not have any latency or bandwidth penalty compared to full 8 word burst
+localparam BURST_CODE          = 3'b001;   
 localparam ACCESS_TYPE         = 1'b0;     // 0=sequential, 1=interleaved
 localparam CAS_LATENCY         = 3'd2;     // 2 for < 100MHz, 3 for >100MHz
 localparam OP_MODE             = 2'b00;    // only 00 (standard operation) allowed
@@ -127,6 +140,8 @@ reg ram_idleNext    = 0;
 
 assign ram_idle = ram_idleNext && !ch3_req;
 
+reg [10:0] lastbank;
+
 // ch3 buffered for timing closure
 reg [26:0]  ch3buf_addr;
 reg [31:0]  ch3buf_din; 
@@ -139,7 +154,7 @@ always @(posedge clk_base) begin
 	ch2_ready <= ch2_ready_ramclock;
 	ch3_ready <= ch3_ready_ramclock;
 
-	ch1_reqprocessed <= ch1_reqprocessed_ramclock;
+	dma_reqprocessed <= dma_reqprocessed_ramclock;
    
    clk1xToggle <= !clk1xToggle;
       
@@ -153,6 +168,28 @@ always @(posedge clk_base) begin
    if (ch1_ready_ramclock) begin
       ch1_dout32 <= ch1_dout[31:0];
    end
+   
+   dma_wr  <= 0;
+   dma_ack <= 0;
+
+   if (dma_wr) begin
+      if (dma_counter < dma_count) begin
+         dma_wr      <= 1;
+         dma_counter <= dma_counter + 1'b1;
+         if (dma_counter == 0) dma_data <= ch1_dout[ 63:32];
+         if (dma_counter == 1) dma_data <= ch1_dout[ 95:64];
+         if (dma_counter == 2) dma_data <= ch1_dout[127:96];
+      end
+   end
+   
+   if (dma_done) begin
+      dma_ack     <= 1;
+      dma_wr      <= 1;
+      dma_data    <= ch1_dout[31:0];
+      dma_counter <= 0;
+      dma_count   <= dma_count_3x;
+   end
+   
 end
 
 reg ch1_ready_ramclock = 0;
@@ -160,25 +197,40 @@ reg ch2_ready_ramclock = 0;
 reg ch3_ready_ramclock = 0;
 reg refreshForce_1 = 0;
 
-reg ch1_reqprocessed_ramclock = 0;
+reg cache_buffer      = 0;
+reg cache_buffer_next = 0;
 
-reg req128    = 0;
+reg cache_done_0  = 0;
+reg cache_done_1  = 0;
+reg cache_done_2  = 0;
+reg cache_done_3  = 0;
+reg [3:0] cache_wr_next = 0;
+
+reg       dma_buffer    = 0;
+reg       dma_done      = 0;
+reg       dma_ack       = 0;
+reg [1:0] dma_count_3x  = 0;
+reg [1:0] dma_count     = 0;
+reg [1:0] dma_counter   = 0;
+reg       dma_reqprocessed_ramclock = 0;
 
 reg  [3:0] state = STATE_STARTUP;
 
 reg ch1_rq, ch2_rq, ch3_rq, refreshForce_req;
 reg saved_wr;
+reg saved_128read = 0;
+
+reg [CAS_LATENCY+BURST_LENGTH:0] data_ready_delay1, data_ready_delay2, data_ready_delay3;
+
+reg [12:0] cas_addr;
+reg [31:0] saved_data;
+reg  [3:0] saved_be;
+reg [15:0] dq_reg;
+
+reg [1:0] ch;
 
 always @(posedge clk) begin
-	reg [CAS_LATENCY+BURST_LENGTH:0] data_ready_delay1, data_ready_delay2, data_ready_delay3;
-
-	reg [12:0] cas_addr;
-	reg [31:0] saved_data;
-	reg  [3:0] saved_be;
-	reg [15:0] dq_reg;
-
-	reg [1:0] ch;
-   
+  
    clk1xToggle3X   <= clk1xToggle;
    clk1xToggle3X_1 <= clk1xToggle3X;
    clk3xIndex      <= clk1xToggle3X_1 == clk1xToggle;
@@ -196,7 +248,11 @@ always @(posedge clk) begin
 	if (ch2_ready) ch2_ready_ramclock <= 0;
 	if (ch3_ready) ch3_ready_ramclock <= 0;
 	
-	if (ch1_reqprocessed) ch1_reqprocessed_ramclock <= 0;
+	if (dma_ack) dma_done <= 0;
+
+	if (dma_reqprocessed) dma_reqprocessed_ramclock <= 0;
+
+	dmafifo_read <= 0;
 
 	refreshForce_1 <= refreshForce;
 	refreshForce_req <= refreshForce_req | (refreshForce & ~refreshForce_1);
@@ -208,7 +264,17 @@ always @(posedge clk) begin
 	data_ready_delay3 <= data_ready_delay3>>1;
 
 	dq_reg <= SDRAM_DQ;
-
+   
+   cache_wr     <= 0;
+   cache_done_0 <= 0;
+   cache_done_1 <= 0;
+   cache_done_2 <= 0;
+   cache_done_3 <= 0;
+   if (cache_done_0) begin cache_data <= ch1_dout[ 31: 0]; cache_wr <= cache_wr_next; cache_wr_next <= { cache_wr_next[2:0], 1'b0 }; end
+   if (cache_done_1) begin cache_data <= ch1_dout[ 63:32]; cache_wr <= cache_wr_next; cache_wr_next <= { cache_wr_next[2:0], 1'b0 }; end
+   if (cache_done_2) begin cache_data <= ch1_dout[ 95:64]; cache_wr <= cache_wr_next; cache_wr_next <= { cache_wr_next[2:0], 1'b0 }; end
+   if (cache_done_3) begin cache_data <= ch1_dout[127:96]; cache_wr <= cache_wr_next; cache_wr_next <= { cache_wr_next[2:0], 1'b0 }; end
+      
    if(data_ready_delay1[7]) ch1_dout[ 15: 00]  <= dq_reg;
    if(data_ready_delay1[6]) ch1_dout[ 31: 16]  <= dq_reg;
    if(data_ready_delay1[5]) ch1_dout[ 47: 32]  <= dq_reg;
@@ -217,8 +283,15 @@ always @(posedge clk) begin
    if(data_ready_delay1[2]) ch1_dout[ 95: 80]  <= dq_reg;
    if(data_ready_delay1[1]) ch1_dout[111: 96]  <= dq_reg;
    if(data_ready_delay1[0]) ch1_dout[127:112]  <= dq_reg;
-   if(data_ready_delay1[2] &&  req128) ch1_ready_ramclock <= 1;
-   if(data_ready_delay1[6] && ~req128) ch1_ready_ramclock <= 1;
+   if(data_ready_delay1[6] && ~dma_buffer && ~cache_buffer_next) ch1_ready_ramclock <= 1;
+   if(data_ready_delay1[4] && cache_buffer_next)                 ch1_ready_ramclock <= 1;
+   if(data_ready_delay1[6] && dma_buffer)                        dma_done <= 1;
+
+   if(data_ready_delay1[7]) cache_buffer_next <= cache_buffer;
+   if(data_ready_delay1[6] && cache_buffer_next) cache_done_0 <= 1;
+   if(data_ready_delay1[4] && cache_buffer_next) cache_done_1 <= 1;
+   if(data_ready_delay1[2] && cache_buffer_next) cache_done_2 <= 1;
+   if(data_ready_delay1[0] && cache_buffer_next) cache_done_3 <= 1;
 
 	if(data_ready_delay2[7]) ch2_dout[15:00]    <= dq_reg;
 	if(data_ready_delay2[6]) ch2_dout[31:16]    <= dq_reg;
@@ -267,14 +340,60 @@ always @(posedge clk) begin
             end
          end
    
-         STATE_IDLE_9: state <= STATE_IDLE_8;
-         STATE_IDLE_8: state <= STATE_IDLE_7;
-         STATE_IDLE_7: state <= STATE_IDLE_6;
-         STATE_IDLE_6: state <= STATE_IDLE_5;
-         STATE_IDLE_5: state <= STATE_IDLE_4;
-         STATE_IDLE_4: state <= STATE_IDLE_3;
-         STATE_IDLE_3: state <= STATE_IDLE_2;
-         STATE_IDLE_2: state <= STATE_IDLE_1;
+         STATE_IDLE_9: begin
+            state <= STATE_IDLE_8;
+            if (saved_128read) begin
+               cas_addr[8:0] <= cas_addr[8:0] + 2'd2;
+            end
+         end
+         
+         STATE_IDLE_8: begin
+            state   <= STATE_IDLE_7;
+            if (saved_128read) begin
+               command <= CMD_READ;
+               SDRAM_A <= cas_addr;
+            end
+         end
+         
+         STATE_IDLE_7: begin
+            state <= STATE_IDLE_6;
+            if (saved_128read) begin
+               cas_addr[8:0] <= cas_addr[8:0] + 2'd2;
+            end
+         end
+         
+         STATE_IDLE_6: begin 
+            state <= STATE_IDLE_5;
+            if (saved_128read) begin
+               command <= CMD_READ;
+               SDRAM_A <= cas_addr;
+            end
+         end
+         
+         STATE_IDLE_5: begin 
+            state <= STATE_IDLE_4;
+            if (saved_128read) begin
+               cas_addr[8:0] <= cas_addr[8:0] + 2'd2;
+            end
+         end
+         
+         STATE_IDLE_4: begin
+            state <= STATE_IDLE_3;
+            if (saved_128read) begin
+               command       <= CMD_READ;
+               SDRAM_A       <= cas_addr;
+               saved_128read <= 0;
+            end
+         end
+         
+         STATE_IDLE_3: begin
+            state <= STATE_IDLE_2;
+         end
+         
+         STATE_IDLE_2: begin
+            state <= STATE_IDLE_1;
+         end
+         
          STATE_IDLE_1: begin
             state      <= STATE_IDLE;
             // mask possible refresh to reduce colliding.
@@ -297,6 +416,7 @@ always @(posedge clk) begin
          end
    
          STATE_IDLE: begin
+            saved_128read <= 0;
             if (refreshForce_req || refresh_count > cycles_per_refresh) begin
                state            <= STATE_RFSH;
                command          <= CMD_AUTO_REFRESH;
@@ -306,18 +426,41 @@ always @(posedge clk) begin
                   refresh_count <= refresh_count - cycles_per_refresh + 1'd1;
                else
                   refresh_count <= 14'd0;
-   
+               
+            end else if(~dmafifo_empty) begin
+               {cas_addr[12:9],SDRAM_BA,SDRAM_A,cas_addr[8:0]} <= {2'b00, 1'b0, dmafifo_adr[25:1]};
+               chip         <= dmafifo_adr[26];
+               saved_data   <= dmafifo_data;
+               saved_wr     <= 1'b1;
+               saved_be     <= 4'b1111;
+               ch           <= 1;
+               command      <= CMD_ACTIVE;
+               state        <= STATE_WAIT;
+               dmafifo_read <= 1'b1;
+               lastbank     <= dmafifo_adr[20:10];
             end else if(ch1_req | ch1_rq) begin
                {cas_addr[12:9],SDRAM_BA,SDRAM_A,cas_addr[8:0]} <= {2'b00, 1'b1, ch1_addr[25:1]};
-               chip       <= ch1_addr[26];
-               saved_data <= ch1_din;
-               saved_wr   <= ~ch1_rnw;
-               ch         <= 0;
-               ch1_rq     <= 0;
-               command    <= CMD_ACTIVE;
-               state      <= STATE_WAIT;
-               req128     <= ch1_128;
-               ch1_reqprocessed_ramclock <= ch1_rnw;
+               chip         <= ch1_addr[26];
+               saved_data   <= ch1_din;
+               saved_wr     <= ~ch1_rnw;
+               ch           <= 0;
+               ch1_rq       <= 0;
+               command      <= CMD_ACTIVE;
+               state        <= STATE_WAIT;
+
+               cache_buffer <= ch1_cache;
+               cache_addr   <= ch1_addr[11:4];
+               if (ch1_addr[3:2] == 2'b00) cache_wr_next <= 4'b0001;
+               if (ch1_addr[3:2] == 2'b01) cache_wr_next <= 4'b0010;
+               if (ch1_addr[3:2] == 2'b10) cache_wr_next <= 4'b0100;
+               if (ch1_addr[3:2] == 2'b11) cache_wr_next <= 4'b1000;
+               
+               dma_buffer                <= ch1_dma;
+               dma_reqprocessed_ramclock <= ch1_dma;
+               dma_count_3x              <= ch1_cntDMA;
+               
+               saved_128read <= ch1_dma | ch1_cache;
+               
             end else if(ch2_req | ch2_rq) begin
                {cas_addr[12:9],SDRAM_BA,SDRAM_A,cas_addr[8:0]} <= {~ch2_be[1:0], ch2_rnw, ch2_addr[25:1]};
                chip       <= ch2_addr[26];
@@ -367,12 +510,19 @@ always @(posedge clk) begin
    
          STATE_RW2: begin
             if(ch == 1) begin
-               state                <= STATE_IDLE_2;
-               SDRAM_A[10]          <= 1;
                SDRAM_A[0]           <= 1;
                command              <= CMD_WRITE;
                SDRAM_DQ             <= saved_data[31:16];
                SDRAM_A[12:11]       <= ~saved_be[3:2];
+               if(~dmafifo_empty && (lastbank == dmafifo_adr[20:10])) begin
+                  cas_addr[8:0]     <= dmafifo_adr[9:1];
+                  saved_data        <= dmafifo_data;
+                  state             <= STATE_RW1;
+                  dmafifo_read      <= 1'b1;
+               end else begin
+                  state             <= STATE_IDLE_2;
+                  SDRAM_A[10]       <= 1;
+               end
             end
             else begin
                state                <= STATE_IDLE_2;

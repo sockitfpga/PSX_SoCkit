@@ -11,33 +11,54 @@ entity psx_mister is
    (
       clk1x                 : in  std_logic;  
       clk2x                 : in  std_logic;  
+      clk3x                 : in  std_logic;  
       clkvid                : in  std_logic;  
       reset                 : in  std_logic;
       isPaused              : out std_logic;
       -- commands 
       pause                 : in  std_logic;
+      hps_busy              : in  std_logic;
       loadExe               : in  std_logic;
+      exe_initial_pc        : in  unsigned(31 downto 0);
+      exe_initial_gp        : in  unsigned(31 downto 0);
+      exe_load_address      : in  unsigned(31 downto 0);
+      exe_file_size         : in  unsigned(31 downto 0);
+      exe_stackpointer      : in  unsigned(31 downto 0);
       fastboot              : in  std_logic;
-      FASTMEM               : in  std_logic;
-      DATACACHEON           : in  std_logic;
+      ram8mb                : in  std_logic;
+      TURBO_MEM             : in  std_logic;
+      TURBO_COMP            : in  std_logic;
+      TURBO_CACHE           : in  std_logic;
+      TURBO_CACHE50         : in  std_logic;
       REPRODUCIBLEGPUTIMING : in  std_logic;
-      REPRODUCIBLEDMATIMING : in  std_logic;
-      DMABLOCKATONCE        : in  std_logic;
       INSTANTSEEK           : in  std_logic;
+      FORCECDSPEED          : in  std_logic_vector(2 downto 0);
+      LIMITREADSPEED        : in  std_logic;
+      IGNORECDDMATIMING     : in  std_logic;
       ditherOff             : in  std_logic;
+      interlaced480pHack    : in  std_logic;
       showGunCrosshairs     : in  std_logic;
       fpscountOn            : in  std_logic;
       cdslowOn              : in  std_logic;
+      testSeek              : in  std_logic;
+      pauseOnCDSlow         : in  std_logic;
       errorOn               : in  std_logic;
+      LBAOn                 : in  std_logic;
       PATCHSERIAL           : in  std_logic;
       noTexture             : in  std_logic;
-      textureFilter         : in  std_logic;
+      textureFilter         : in  std_logic_vector(1 downto 0);
+      textureFilterStrength : in  std_logic_vector(1 downto 0);
+      textureFilter2DOff    : in  std_logic;
+      dither24              : in  std_logic;
+      render24              : in  std_logic;
       syncVideoOut          : in  std_logic;
       syncInterlace         : in  std_logic;
       rotate180             : in  std_logic;
       fixedVBlank           : in  std_logic;
       vCrop                 : in  std_logic_vector(1 downto 0);
+      hCrop                 : in  std_logic;
       SPUon                 : in  std_logic;
+      SPUIRQTrigger         : in  std_logic;
       SPUSDRAM              : in  std_logic;
       REVERBOFF             : in  std_logic;
       REPRODUCIBLESPUDMA    : in  std_logic;
@@ -46,16 +67,25 @@ entity psx_mister is
       biosregion            : in  std_logic_vector(1 downto 0);  
       ram_refresh           : out std_logic;
       ram_dataWrite         : out std_logic_vector(31 downto 0);
-      ram_dataRead          : in  std_logic_vector(127 downto 0);
       ram_dataRead32        : in  std_logic_vector(31 downto 0);
-      ram_Adr               : out std_logic_vector(22 downto 0);
+      ram_Adr               : out std_logic_vector(24 downto 0);
+      ram_cntDMA            : out std_logic_vector(1 downto 0);
       ram_be                : out std_logic_vector(3 downto 0) := (others => '0');
       ram_rnw               : out std_logic;
       ram_ena               : out std_logic;
-      ram_128               : out std_logic;
-      ram_done              : in  std_logic;  
-      ram_idle              : in  std_logic;  
-      ram_reqprocessed      : in  std_logic;   
+      ram_dma               : out std_logic;
+      ram_cache             : out std_logic;
+      ram_done              : in  std_logic;
+      ram_dmafifo_adr       : out std_logic_vector(22 downto 0);
+      ram_dmafifo_data      : out std_logic_vector(31 downto 0);
+      ram_dmafifo_empty     : out std_logic;
+      ram_dmafifo_read      : in  std_logic; 
+      cache_wr              : in  std_logic_vector(3 downto 0);
+      cache_data            : in  std_logic_vector(31 downto 0);
+      cache_addr            : in  std_logic_vector(7 downto 0);  
+      dma_wr                : in  std_logic;
+      dma_reqprocessed      : in  std_logic;
+      dma_data              : in  std_logic_vector(31 downto 0);      
       -- vram/ddr3 interface
       DDRAM_BUSY            : in  std_logic;                    
       DDRAM_BURSTCNT        : out std_logic_vector(7 downto 0); 
@@ -92,9 +122,11 @@ entity psx_mister is
       spuram_done           : in  std_logic;
       -- memcard
       memcard_changed       : out std_logic;
+      saving_memcard        : out std_logic;
       memcard1_load         : in  std_logic;
       memcard2_load         : in  std_logic;
       memcard_save          : in  std_logic;
+      memcard1_mounted      : in  std_logic;
       memcard1_available    : in  std_logic;
       memcard1_rd           : out std_logic := '0';
       memcard1_wr           : out std_logic := '0';
@@ -104,6 +136,7 @@ entity psx_mister is
       memcard1_addr         : in  std_logic_vector(8 downto 0);
       memcard1_dataIn       : in  std_logic_vector(15 downto 0);
       memcard1_dataOut      : out std_logic_vector(15 downto 0);
+      memcard2_mounted      : in  std_logic;               
       memcard2_available    : in  std_logic;               
       memcard2_rd           : out std_logic := '0';
       memcard2_wr           : out std_logic := '0';
@@ -131,10 +164,14 @@ entity psx_mister is
       video_g               : out std_logic_vector(7 downto 0);
       video_b               : out std_logic_vector(7 downto 0);
       video_isPal           : out std_logic;
+      video_fbmode          : out std_logic;
+      video_fb24            : out std_logic;
       video_hResMode        : out std_logic_vector(2 downto 0);
+      video_frameindex      : out std_logic_vector(3 downto 0);
       -- Keys - all active high   
       DSAltSwitchMode       : in  std_logic;
       PadPortEnable1        : in  std_logic;
+      PadPortDigital1       : in  std_logic;
       PadPortAnalog1        : in  std_logic;
       PadPortMouse1         : in  std_logic;
       PadPortGunCon1        : in  std_logic;
@@ -144,6 +181,7 @@ entity psx_mister is
       PadPortJustif1        : in  std_logic;
       PadPortStick1         : in  std_logic;
       PadPortEnable2        : in  std_logic;
+      PadPortDigital2       : in  std_logic;
       PadPortAnalog2        : in  std_logic;
       PadPortMouse2         : in  std_logic;
       PadPortGunCon2        : in  std_logic;
@@ -152,22 +190,23 @@ entity psx_mister is
       PadPortDS2            : in  std_logic;
       PadPortJustif2        : in  std_logic;
       PadPortStick2         : in  std_logic;
-      KeyTriangle           : in  std_logic_vector(1 downto 0); 
-      KeyCircle             : in  std_logic_vector(1 downto 0); 
-      KeyCross              : in  std_logic_vector(1 downto 0); 
-      KeySquare             : in  std_logic_vector(1 downto 0);
-      KeySelect             : in  std_logic_vector(1 downto 0);
-      KeyStart              : in  std_logic_vector(1 downto 0);
-      KeyRight              : in  std_logic_vector(1 downto 0);
-      KeyLeft               : in  std_logic_vector(1 downto 0);
-      KeyUp                 : in  std_logic_vector(1 downto 0);
-      KeyDown               : in  std_logic_vector(1 downto 0);
-      KeyR1                 : in  std_logic_vector(1 downto 0);
-      KeyR2                 : in  std_logic_vector(1 downto 0);
-      KeyR3                 : in  std_logic_vector(1 downto 0);
-      KeyL1                 : in  std_logic_vector(1 downto 0);
-      KeyL2                 : in  std_logic_vector(1 downto 0);
-      KeyL3                 : in  std_logic_vector(1 downto 0);
+      KeyTriangle           : in  std_logic_vector(3 downto 0);
+      KeyCircle             : in  std_logic_vector(3 downto 0);
+      KeyCross              : in  std_logic_vector(3 downto 0);
+      KeySquare             : in  std_logic_vector(3 downto 0);
+      KeySelect             : in  std_logic_vector(3 downto 0);
+      KeyStart              : in  std_logic_vector(3 downto 0);
+      KeyRight              : in  std_logic_vector(3 downto 0);
+      KeyLeft               : in  std_logic_vector(3 downto 0);
+      KeyUp                 : in  std_logic_vector(3 downto 0);
+      KeyDown               : in  std_logic_vector(3 downto 0);
+      KeyR1                 : in  std_logic_vector(3 downto 0);
+      KeyR2                 : in  std_logic_vector(3 downto 0);
+      KeyR3                 : in  std_logic_vector(3 downto 0);
+      KeyL1                 : in  std_logic_vector(3 downto 0);
+      KeyL2                 : in  std_logic_vector(3 downto 0);
+      KeyL3                 : in  std_logic_vector(3 downto 0);
+      ToggleDS              : in  std_logic_vector(3 downto 0);
       Analog1XP1            : in  signed(7 downto 0);
       Analog1YP1            : in  signed(7 downto 0);
       Analog2XP1            : in  signed(7 downto 0);
@@ -176,6 +215,17 @@ entity psx_mister is
       Analog1YP2            : in  signed(7 downto 0);
       Analog2XP2            : in  signed(7 downto 0);
       Analog2YP2            : in  signed(7 downto 0);                  
+      Analog1XP3            : in  signed(7 downto 0);
+      Analog1YP3            : in  signed(7 downto 0);
+      Analog2XP3            : in  signed(7 downto 0);
+      Analog2YP3            : in  signed(7 downto 0);
+      Analog1XP4            : in  signed(7 downto 0);
+      Analog1YP4            : in  signed(7 downto 0);
+      Analog2XP4            : in  signed(7 downto 0);
+      Analog2YP4            : in  signed(7 downto 0);
+      multitap              : in  std_logic;
+      multitapDigital       : in  std_logic;
+      multitapAnalog        : in  std_logic;
       -- mouse
       MouseEvent            : in  std_logic;
       MouseLeft             : in  std_logic;
@@ -184,6 +234,8 @@ entity psx_mister is
       MouseY                : in  signed(8 downto 0);
       RumbleDataP1          : out std_logic_vector(15 downto 0);
       RumbleDataP2          : out std_logic_vector(15 downto 0);
+      RumbleDataP3          : out std_logic_vector(15 downto 0);
+      RumbleDataP4          : out std_logic_vector(15 downto 0);
       padMode               : out std_logic_vector(1 downto 0);
       -- snac
       snacPort1             : in  std_logic;
@@ -245,33 +297,54 @@ begin
    (
       clk1x                 => clk1x,          
       clk2x                 => clk2x,          
+      clk3x                 => clk3x,          
       clkvid                => clkvid,          
       reset                 => reset, 
       isPaused              => isPaused, 
       -- commands 
       pause                 => pause,
+      hps_busy              => hps_busy,
       loadExe               => loadExe,
+      exe_initial_pc        => exe_initial_pc,  
+      exe_initial_gp        => exe_initial_gp,  
+      exe_load_address      => exe_load_address,
+      exe_file_size         => exe_file_size,   
+      exe_stackpointer      => exe_stackpointer,
       fastboot              => fastboot,
-      FASTMEM               => FASTMEM,
-      DATACACHEON           => DATACACHEON,
+      ram8mb                => ram8mb,
+      TURBO_MEM             => TURBO_MEM,
+      TURBO_COMP            => TURBO_COMP,
+      TURBO_CACHE           => TURBO_CACHE,
+      TURBO_CACHE50         => TURBO_CACHE50,
       REPRODUCIBLEGPUTIMING => REPRODUCIBLEGPUTIMING,
-      REPRODUCIBLEDMATIMING => REPRODUCIBLEDMATIMING,
-      DMABLOCKATONCE        => DMABLOCKATONCE,
       INSTANTSEEK           => INSTANTSEEK,
+      FORCECDSPEED          => FORCECDSPEED,
+      LIMITREADSPEED        => LIMITREADSPEED,
+      IGNORECDDMATIMING     => IGNORECDDMATIMING,
       ditherOff             => ditherOff,
+      interlaced480pHack    => interlaced480pHack,
       showGunCrosshairs     => showGunCrosshairs,
       fpscountOn            => fpscountOn,
       cdslowOn              => cdslowOn,
+      testSeek              => testSeek,
+      pauseOnCDSlow         => pauseOnCDSlow,
       errorOn               => errorOn,
+      LBAOn                 => LBAOn,
       PATCHSERIAL           => PATCHSERIAL,
       noTexture             => noTexture,
       textureFilter         => textureFilter,
+      textureFilterStrength => textureFilterStrength,
+      textureFilter2DOff    => textureFilter2DOff,
+      dither24              => dither24,
+      render24              => render24,
       syncVideoOut          => syncVideoOut,
       syncInterlace         => syncInterlace,
       rotate180             => rotate180,
       fixedVBlank           => fixedVBlank,
       vCrop                 => vCrop,      
+      hCrop                 => hCrop,
       SPUon                 => SPUon,
+      SPUIRQTrigger         => SPUIRQTrigger,
       SPUSDRAM              => SPUSDRAM,
       REVERBOFF             => REVERBOFF,
       REPRODUCIBLESPUDMA    => REPRODUCIBLESPUDMA,
@@ -280,16 +353,25 @@ begin
       biosregion            => biosregion,
       ram_refresh           => ram_refresh,
       ram_dataWrite         => ram_dataWrite,
-      ram_dataRead          => ram_dataRead, 
       ram_dataRead32        => ram_dataRead32, 
       ram_Adr               => ram_Adr, 
+      ram_cntDMA            => ram_cntDMA, 
       ram_be                => ram_be,        
       ram_rnw               => ram_rnw,      
       ram_ena               => ram_ena,  
-      ram_128               => ram_128,       
-      ram_done              => ram_done,    
-      ram_idle              => ram_idle,    
-      ram_reqprocessed      => ram_reqprocessed,     
+      ram_dma               => ram_dma,       
+      ram_cache             => ram_cache,       
+      ram_done              => ram_done, 
+      ram_dmafifo_adr       => ram_dmafifo_adr, 
+      ram_dmafifo_data      => ram_dmafifo_data,
+      ram_dmafifo_empty     => ram_dmafifo_empty,
+      ram_dmafifo_read      => ram_dmafifo_read,   
+      cache_wr              => cache_wr,  
+      cache_data            => cache_data,
+      cache_addr            => cache_addr,     
+      dma_wr                => dma_wr,  
+      dma_reqprocessed      => dma_reqprocessed,  
+      dma_data              => dma_data,      
       -- vram interface
       ddr3_BUSY             => DDRAM_BUSY,      
       ddr3_DOUT             => DDRAM_DOUT,      
@@ -326,9 +408,11 @@ begin
       spuram_done           => spuram_done,        
       --memcard
       memcard_changed       => memcard_changed,
+      saving_memcard        => saving_memcard,
       memcard1_load         => memcard1_load,       
       memcard2_load         => memcard2_load,       
       memcard_save          => memcard_save,       
+      memcard1_mounted      => memcard1_mounted, 
       memcard1_available    => memcard1_available, 
       memcard1_rd           => memcard1_rd,        
       memcard1_wr           => memcard1_wr,        
@@ -338,6 +422,7 @@ begin
       memcard1_addr         => memcard1_addr,      
       memcard1_dataIn       => memcard1_dataIn,    
       memcard1_dataOut      => memcard1_dataOut,   
+      memcard2_mounted      => memcard2_mounted, 
       memcard2_available    => memcard2_available, 
       memcard2_rd           => memcard2_rd,        
       memcard2_wr           => memcard2_wr,        
@@ -365,11 +450,15 @@ begin
       video_g               => video_g, 
       video_b               => video_b, 
       video_isPal           => video_isPal, 
+      video_fbmode          => video_fbmode, 
+      video_fb24            => video_fb24, 
       video_hResMode        => video_hResMode, 
+      video_frameindex      => video_frameindex, 
       -- inputs
       DSAltSwitchMode       => DSAltSwitchMode,
       
       joypad1.PadPortEnable => PadPortEnable1,
+      joypad1.PadPortDigital=> PadPortDigital1,
       joypad1.PadPortAnalog => PadPortAnalog1,
       joypad1.PadPortMouse  => PadPortMouse1,
       joypad1.PadPortGunCon => PadPortGunCon1,
@@ -395,6 +484,7 @@ begin
       joypad1.KeyL1         => KeyL1(0),
       joypad1.KeyL2         => KeyL2(0),
       joypad1.KeyL3         => KeyL3(0),
+      joypad1.ToggleDS      => ToggleDS(0),
       joypad1.Analog1X      => Analog1XP1,
       joypad1.Analog1Y      => Analog1YP1,
       joypad1.Analog2X      => Analog2XP1,
@@ -402,6 +492,7 @@ begin
       joypad1_rumble        => RumbleDataP1,
 
       joypad2.PadPortEnable => PadPortEnable2,
+      joypad2.PadPortDigital=> PadPortDigital2,
       joypad2.PadPortAnalog => PadPortAnalog2,
       joypad2.PadPortMouse  => PadPortMouse2,
       joypad2.PadPortGunCon => PadPortGunCon2,
@@ -427,12 +518,85 @@ begin
       joypad2.KeyL1         => KeyL1(1),
       joypad2.KeyL2         => KeyL2(1),
       joypad2.KeyL3         => KeyL3(1),
+      joypad2.ToggleDS      => ToggleDS(1),
       joypad2.Analog1X      => Analog1XP2,
       joypad2.Analog1Y      => Analog1YP2,
       joypad2.Analog2X      => Analog2XP2,
       joypad2.Analog2Y      => Analog2YP2,
       joypad2_rumble        => RumbleDataP2,
-      
+
+      joypad3.PadPortEnable => '1',
+      joypad3.PadPortDigital=> '1',
+      joypad3.PadPortAnalog => '0',
+      joypad3.PadPortMouse  => '0',
+      joypad3.PadPortGunCon => '0',
+      joypad3.PadPortNeGcon => '0',
+      joypad3.PadPortJustif => '0',
+      joypad3.WheelMap      => '0',
+      joypad3.PadPortDS     => '0',
+      joypad3.PadPortStick  => '0',
+
+      joypad3.KeyTriangle   => KeyTriangle(2),
+      joypad3.KeyCircle     => KeyCircle(2),
+      joypad3.KeyCross      => KeyCross(2),
+      joypad3.KeySquare     => KeySquare(2),
+      joypad3.KeySelect     => KeySelect(2),
+      joypad3.KeyStart      => KeyStart(2),
+      joypad3.KeyRight      => KeyRight(2),
+      joypad3.KeyLeft       => KeyLeft(2),
+      joypad3.KeyUp         => KeyUp(2),
+      joypad3.KeyDown       => KeyDown(2),
+      joypad3.KeyR1         => KeyR1(2),
+      joypad3.KeyR2         => KeyR2(2),
+      joypad3.KeyR3         => KeyR3(2),
+      joypad3.KeyL1         => KeyL1(2),
+      joypad3.KeyL2         => KeyL2(2),
+      joypad3.KeyL3         => KeyL3(2),
+      joypad3.ToggleDS      => ToggleDS(2),
+      joypad3.Analog1X      => Analog1XP3,
+      joypad3.Analog1Y      => Analog1YP3,
+      joypad3.Analog2X      => Analog2XP3,
+      joypad3.Analog2Y      => Analog2YP3,
+      joypad3_rumble        => RumbleDataP3,
+
+      joypad4.PadPortEnable => '1',
+      joypad4.PadPortDigital=> '1',
+      joypad4.PadPortAnalog => '0',
+      joypad4.PadPortMouse  => '0',
+      joypad4.PadPortGunCon => '0',
+      joypad4.PadPortNeGcon => '0',
+      joypad4.PadPortJustif => '0',
+      joypad4.WheelMap      => '0',
+      joypad4.PadPortDS     => '0',
+      joypad4.PadPortStick  => '0',
+
+      joypad4.KeyTriangle   => KeyTriangle(3),
+      joypad4.KeyCircle     => KeyCircle(3),
+      joypad4.KeyCross      => KeyCross(3),
+      joypad4.KeySquare     => KeySquare(3),
+      joypad4.KeySelect     => KeySelect(3),
+      joypad4.KeyStart      => KeyStart(3),
+      joypad4.KeyRight      => KeyRight(3),
+      joypad4.KeyLeft       => KeyLeft(3),
+      joypad4.KeyUp         => KeyUp(3),
+      joypad4.KeyDown       => KeyDown(3),
+      joypad4.KeyR1         => KeyR1(3),
+      joypad4.KeyR2         => KeyR2(3),
+      joypad4.KeyR3         => KeyR3(3),
+      joypad4.KeyL1         => KeyL1(3),
+      joypad4.KeyL2         => KeyL2(3),
+      joypad4.KeyL3         => KeyL3(3),
+      joypad4.ToggleDS      => ToggleDS(3),
+      joypad4.Analog1X      => Analog1XP4,
+      joypad4.Analog1Y      => Analog1YP4,
+      joypad4.Analog2X      => Analog2XP4,
+      joypad4.Analog2Y      => Analog2YP4,
+      joypad4_rumble        => RumbleDataP4,
+
+      multitap              => multitap,
+      multitapDigital       => multitapDigital,
+      multitapAnalog        => multitapAnalog,
+
       padMode               => padMode,
 
       MouseEvent            => MouseEvent,

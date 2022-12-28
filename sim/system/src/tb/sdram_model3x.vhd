@@ -9,7 +9,6 @@ entity sdram_model3x is
    generic
    (
       DOREFRESH         : std_logic := '0';
-      SLOWWRITE         : std_logic := '0';
       INITFILE          : string := "NONE";
       SCRIPTLOADING     : std_logic := '0';
       FILELOADING       : std_logic := '0'
@@ -21,16 +20,32 @@ entity sdram_model3x is
       refresh           : in  std_logic;
       addr              : in  std_logic_vector(26 downto 0);
       req               : in  std_logic;
-      ram_128           : in  std_logic;
+      ram_dma           : in  std_logic;
+      ram_dmacnt        : in  std_logic_vector(1 downto 0);
+      ram_iscache       : in  std_logic;
       rnw               : in  std_logic;
       be                : in  std_logic_vector(3 downto 0);
       di                : in  std_logic_vector(31 downto 0);
       do                : buffer std_logic_vector(127 downto 0);
       do32              : out std_logic_vector(31 downto 0);
       done              : buffer std_logic := '0';
+      cache_wr          : out std_logic_vector(3 downto 0) := (others => '0');
+      cache_data        : out std_logic_vector(31 downto 0) := (others => '0');
+      cache_addr        : out std_logic_vector(7 downto 0) := (others => '0');
+      dma_wr            : buffer std_logic := '0';
+      dma_data          : out std_logic_vector(31 downto 0) := (others => '0');
       reqprocessed      : buffer std_logic := '0';
       ram_idle          : out std_logic := '0';
-      fileSize          : out unsigned(29 downto 0) := (others => '0')
+      ram_dmafifo_adr   : in  std_logic_vector(22 downto 0);
+      ram_dmafifo_data  : in  std_logic_vector(31 downto 0);
+      ram_dmafifo_empty : in  std_logic;
+      ram_dmafifo_read  : out std_logic := '0';
+      fileSize          : out unsigned(29 downto 0) := (others => '0');
+      exe_initial_pc    : out unsigned(31 downto 0);
+      exe_initial_gp    : out unsigned(31 downto 0);
+      exe_load_address  : out unsigned(31 downto 0);
+      exe_file_size     : out unsigned(31 downto 0);
+      exe_stackpointer  : out unsigned(31 downto 0)
    );
 end entity;
 
@@ -54,8 +69,9 @@ architecture arch of sdram_model3x is
    signal req_buffer             : std_logic := '0';
    signal refresh_buffer         : std_logic := '0';
    signal addr_buffer            : std_logic_vector(26 downto 0);
-   signal ram_128_buffer         : std_logic := '0';
-   signal rnw_128_buffer         : std_logic := '0';
+   signal rnw_buffer             : std_logic := '0';
+   
+   signal lastbank               : std_logic_vector(12 downto 0);
         
    signal refreshcnt             : integer range 0 to 1000 := 0;
    
@@ -65,6 +81,23 @@ architecture arch of sdram_model3x is
    signal done_3x                : std_logic := '0';
    signal req_1                  : std_logic := '0';
    signal refresh_1              : std_logic := '0';
+   
+   signal cache_buffer           : std_logic := '0';
+   signal cache_buffer_next      : std_logic := '0';
+   
+   signal cache_done_0           : std_logic := '0';
+   signal cache_done_1           : std_logic := '0';
+   signal cache_done_2           : std_logic := '0';
+   signal cache_done_3           : std_logic := '0';
+   signal cache_wr_next          : std_logic_vector(3 downto 0);
+   
+   signal dma_buffer             : std_logic := '0';
+   signal dma_done               : std_logic := '0';
+   signal dma_ack                : std_logic := '0';
+   signal dma_count_3x           : unsigned(1 downto 0);
+   signal dma_count              : unsigned(1 downto 0);
+   signal dma_counter            : unsigned(1 downto 0);
+   signal dma_do                 : std_logic_vector(127 downto 0);
    
    type tstate is
    (
@@ -110,6 +143,28 @@ begin
          else
             do32 <= do(31 downto 0);
          end if;
+      end if;
+      
+      dma_wr  <= '0';
+      dma_ack <= '0';
+
+      if (dma_wr = '1') then
+         if (dma_counter < dma_count) then
+            dma_wr      <= '1';
+            dma_counter <= dma_counter + 1;
+            if (dma_counter = 0) then dma_data <= dma_do( 63 downto 32); end if;
+            if (dma_counter = 1) then dma_data <= dma_do( 95 downto 64); end if;
+            if (dma_counter = 2) then dma_data <= dma_do(127 downto 96); end if;
+         end if;
+      end if;
+      
+      if (dma_done = '1') then
+         dma_ack     <= '1';
+         dma_wr      <= '1';
+         dma_data    <= do( 31 downto  0);
+         dma_do      <= do;
+         dma_counter <= (others => '0');
+         dma_count   <= dma_count_3x;
       end if;
    
    end process;
@@ -170,14 +225,25 @@ begin
          done_3x <= '0';
       end if;
       
+      if (dma_ack = '1') then
+         dma_done <= '0';
+      end if;
+      
+      cache_wr     <= (others => '0');
+      cache_done_0 <= '0';
+      cache_done_1 <= '0';
+      cache_done_2 <= '0';
+      cache_done_3 <= '0';
+      if (cache_done_0 = '1') then cache_data <= do( 31 downto  0); cache_wr <= cache_wr_next; cache_wr_next <= cache_wr_next(2 downto 0) & '0'; end if;
+      if (cache_done_1 = '1') then cache_data <= do( 63 downto 32); cache_wr <= cache_wr_next; cache_wr_next <= cache_wr_next(2 downto 0) & '0'; end if;
+      if (cache_done_2 = '1') then cache_data <= do( 95 downto 64); cache_wr <= cache_wr_next; cache_wr_next <= cache_wr_next(2 downto 0) & '0'; end if;
+      if (cache_done_3 = '1') then cache_data <= do(127 downto 96); cache_wr <= cache_wr_next; cache_wr_next <= cache_wr_next(2 downto 0) & '0'; end if;
+      
       if (reqprocessed = '1') then
          reqprocessed_3x <= '0';
       end if;
       
-      --req_1 <= req;
-      --if (req = '1' and req_1 = '0') then
-      --   req_buffer <= '1';
-      --end if;
+      ram_dmafifo_read <= '0';
       
       if (clk3xIndex = '1' and req = '1') then
          req_buffer <= '1';
@@ -194,15 +260,22 @@ begin
       
       data_ready_delay1 <= '0' & data_ready_delay1(10 downto 1);
 
-      if(data_ready_delay1(2) = '1' and ram_128_buffer = '1') then done_3x <= '1'; end if;
-      if(data_ready_delay1(6) = '1' and ram_128_buffer = '0') then done_3x <= '1'; end if;
+      if(data_ready_delay1(6) = '1' and dma_buffer = '0' and cache_buffer_next = '0') then done_3x  <= '1'; end if;
+      if(data_ready_delay1(4) = '1' and cache_buffer_next = '1')                      then done_3x  <= '1'; end if;
+      if(data_ready_delay1(6) = '1' and dma_buffer = '1')                             then dma_done <= '1'; end if;
+      
+      if(data_ready_delay1(7) = '1') then cache_buffer_next <= cache_buffer; end if;
+      if(data_ready_delay1(6) = '1' and cache_buffer_next = '1') then cache_done_0 <= '1'; end if;
+      if(data_ready_delay1(4) = '1' and cache_buffer_next = '1') then cache_done_1 <= '1'; end if;
+      if(data_ready_delay1(2) = '1' and cache_buffer_next = '1') then cache_done_2 <= '1'; end if;
+      if(data_ready_delay1(0) = '1' and cache_buffer_next = '1') then cache_done_3 <= '1'; end if;
       
       if(data_ready_delay1(7) = '1') then
          addr_rotate := addr_buffer;
          for i in 0 to 7 loop
             do(7  + (i * 16) downto     (i * 16))  <= std_logic_vector(to_unsigned(data(to_integer(unsigned(addr_rotate(26 downto 1)) & '0') + 0), 8));
             do(15 + (i * 16) downto 8 + (i * 16))  <= std_logic_vector(to_unsigned(data(to_integer(unsigned(addr_rotate(26 downto 1)) & '0') + 1), 8));
-            addr_rotate(3 downto 1) := std_logic_vector(unsigned(addr_rotate(3 downto 1)) + 1); 
+            addr_rotate(9 downto 1) := std_logic_vector(unsigned(addr_rotate(9 downto 1)) + 1); 
          end loop;
       end if;
       
@@ -217,6 +290,16 @@ begin
                   refreshcnt <= 0;
                end if;
                refresh_buffer <= '0';
+               
+            elsif (ram_dmafifo_empty = '0') then
+               data(to_integer(unsigned(ram_dmafifo_adr(22 downto 1)) & '0') + 3) := to_integer(unsigned(ram_dmafifo_data(31 downto 24)));
+               data(to_integer(unsigned(ram_dmafifo_adr(22 downto 1)) & '0') + 2) := to_integer(unsigned(ram_dmafifo_data(23 downto 16)));
+               data(to_integer(unsigned(ram_dmafifo_adr(22 downto 1)) & '0') + 1) := to_integer(unsigned(ram_dmafifo_data(15 downto  8)));
+               data(to_integer(unsigned(ram_dmafifo_adr(22 downto 1)) & '0') + 0) := to_integer(unsigned(ram_dmafifo_data( 7 downto  0)));
+               lastbank         <= ram_dmafifo_adr(22 downto 10);
+               ram_dmafifo_read <= '1';
+               rnw_buffer       <= '0';
+               state            <= STATE_WAIT;
             
             elsif ((req = '1' or req_buffer = '1') and rnw = '0') then
                if (be(3) = '1') then data(to_integer(unsigned(addr(26 downto 1)) & '0') + 3) := to_integer(unsigned(di(31 downto 24))); end if;
@@ -224,28 +307,33 @@ begin
                if (be(1) = '1') then data(to_integer(unsigned(addr(26 downto 1)) & '0') + 1) := to_integer(unsigned(di(15 downto  8))); end if;
                if (be(0) = '1') then data(to_integer(unsigned(addr(26 downto 1)) & '0') + 0) := to_integer(unsigned(di( 7 downto  0))); end if;
                req_buffer      <= '0';
-               rnw_128_buffer  <= '0';
-               if (SLOWWRITE = '1') then
-                  reqprocessed_3x <= '1';
-               else
-                  done_3x         <= '1';
-               end if;
+               rnw_buffer      <= '0';
+               done_3x         <= '1';
                state           <= STATE_WAIT;
                
             elsif ((req = '1' or req_buffer = '1') and rnw = '1') then
-               reqprocessed_3x <= '1';
                req_buffer      <= '0';
-               addr_buffer     <= addr;
-               ram_128_buffer  <= ram_128;
-               rnw_128_buffer  <= '1';
+               addr_buffer     <= addr; 
+               rnw_buffer      <= '1';
                state           <= STATE_WAIT;
+               
+               cache_buffer    <= ram_iscache;
+               cache_addr      <= addr(11 downto 4);
+               if (addr(3 downto 2) = "00") then cache_wr_next <= "0001"; end if;
+               if (addr(3 downto 2) = "01") then cache_wr_next <= "0010"; end if;
+               if (addr(3 downto 2) = "10") then cache_wr_next <= "0100"; end if;
+               if (addr(3 downto 2) = "11") then cache_wr_next <= "1000"; end if;
+               
+               dma_buffer      <= ram_dma;
+               reqprocessed_3x <= ram_dma;
+               dma_count_3x    <= unsigned(ram_dmacnt);
             end if;
          
          when STATE_WAIT => 
             state <= STATE_RW1;
          
          when STATE_RW1 =>  
-            if (rnw_128_buffer = '1') then
+            if (rnw_buffer = '1') then
                state <= STATE_IDLE_9;
                data_ready_delay1(CAS_LATENCY+BURST_LENGTH) <= '1';
             else
@@ -253,9 +341,15 @@ begin
             end if;
          
          when STATE_RW2 => 
-            state   <= STATE_IDLE_2;
-            if (SLOWWRITE = '1') then
-               done_3x         <= '1';
+            if (ram_dmafifo_empty = '0' and ram_dmafifo_adr(22 downto 10) = lastbank) then
+               data(to_integer(unsigned(ram_dmafifo_adr(22 downto 1)) & '0') + 3) := to_integer(unsigned(ram_dmafifo_data(31 downto 24)));
+               data(to_integer(unsigned(ram_dmafifo_adr(22 downto 1)) & '0') + 2) := to_integer(unsigned(ram_dmafifo_data(23 downto 16)));
+               data(to_integer(unsigned(ram_dmafifo_adr(22 downto 1)) & '0') + 1) := to_integer(unsigned(ram_dmafifo_data(15 downto  8)));
+               data(to_integer(unsigned(ram_dmafifo_adr(22 downto 1)) & '0') + 0) := to_integer(unsigned(ram_dmafifo_data( 7 downto  0)));
+               ram_dmafifo_read <= '1';
+               state            <= STATE_RW1;
+            else
+               state   <= STATE_IDLE_2;
             end if;
          
          when STATE_IDLE_9 => state <= STATE_IDLE_8;
@@ -318,7 +412,17 @@ begin
             file_close(infile);
          
             COMMAND_FILE_ACK_1 <= '1';
-         
+            
+            targetpos := COMMAND_FILE_TARGET;
+            
+            exe_initial_pc   <= to_unsigned(data(targetpos + 16#13#), 8) & to_unsigned(data(targetpos + 16#12#), 8) & to_unsigned(data(targetpos + 16#11#), 8) & to_unsigned(data(targetpos + 16#10#), 8);
+            exe_initial_gp   <= to_unsigned(data(targetpos + 16#17#), 8) & to_unsigned(data(targetpos + 16#16#), 8) & to_unsigned(data(targetpos + 16#15#), 8) & to_unsigned(data(targetpos + 16#14#), 8);
+            exe_load_address <= to_unsigned(data(targetpos + 16#1B#), 8) & to_unsigned(data(targetpos + 16#1A#), 8) & to_unsigned(data(targetpos + 16#19#), 8) & to_unsigned(data(targetpos + 16#18#), 8);
+            exe_file_size    <= to_unsigned(data(targetpos + 16#1F#), 8) & to_unsigned(data(targetpos + 16#1E#), 8) & to_unsigned(data(targetpos + 16#1D#), 8) & to_unsigned(data(targetpos + 16#1C#), 8);
+            
+            exe_stackpointer <= (to_unsigned(data(targetpos + 16#33#), 8) & to_unsigned(data(targetpos + 16#32#), 8) & to_unsigned(data(targetpos + 16#31#), 8) & to_unsigned(data(targetpos + 16#30#), 8)) + 
+                                (to_unsigned(data(targetpos + 16#37#), 8) & to_unsigned(data(targetpos + 16#36#), 8) & to_unsigned(data(targetpos + 16#35#), 8) & to_unsigned(data(targetpos + 16#34#), 8));
+            
          end if;
       end if;
       

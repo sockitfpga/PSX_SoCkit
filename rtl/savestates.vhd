@@ -18,6 +18,7 @@ entity savestates is
       reset_out               : out std_logic := '0';
       ss_reset                : out std_logic := '0';
          
+      hps_busy                : in  std_logic;
       loadExe                 : in  std_logic;
          
       load_done               : out std_logic := '0';
@@ -58,7 +59,6 @@ entity savestates is
             
       loading_savestate       : out std_logic := '0';
       saving_savestate        : out std_logic := '0';
-      sleep_savestate         : out std_logic := '0';
       
       ddr3_BUSY               : in  std_logic;                    
       ddr3_DOUT               : in  std_logic_vector(63 downto 0);
@@ -120,8 +120,8 @@ architecture arch of savestates is
    type tstate is
    (
       IDLE,
-      SAVE_WAITPAUSE,
-      SAVE_WAITIDLE,
+      WAITPAUSE,
+      WAITIDLE,
       SAVE_WAITSETTLE,
       SAVEMEMORY_NEXT,
       SAVEMEMORY_STARTREAD,
@@ -162,7 +162,7 @@ architecture arch of savestates is
    signal SS_wren_2x          : std_logic_vector(SAVETYPESCOUNT - 1 downto 0);
    signal SS_rden_2x          : std_logic_vector(SAVETYPESCOUNT - 1 downto 0);
    
-   signal unstallwait         : integer range 0 to 16777215 := 0;
+   signal unstallwait         : integer range 0 to 67108863 := 0;
    
    signal ddr3_ADDR_save      : std_logic_vector(25 downto 0) := (others => '0');
    signal ddr3_DOUT_saved     : std_logic_vector(63 downto 0);
@@ -173,13 +173,17 @@ architecture arch of savestates is
    signal RAMAddrNext         : unsigned(18 downto 0) := (others => '0');
    signal slowcounter         : integer range 0 to 8 := 0;
    
+   signal SPURAM_done1X       : std_logic := '0';
+   signal SPURAM_dataRead1x   : std_logic_vector(15 downto 0);
    signal SPURAM_done2X       : std_logic := '0';
+   signal SPURAM_done2X_1     : std_logic := '0';
    signal SPURAM_dataRead2x   : std_logic_vector(15 downto 0);
    signal spu_din             : std_logic_vector(63 downto 0);
    
    signal header_amount       : unsigned(31 downto 0) := to_unsigned(1, 32);
    
    signal resetMode           : std_logic := '0';
+   signal savemode            : std_logic := '0';
    
    signal reset_in_1          : std_logic := '0';
    
@@ -237,6 +241,12 @@ begin
             when others => SS_DataRead <= (others => '0');
          end case;
          
+         SPURAM_done1X <= '0';
+         if (SS_SPURAM_done = '1') then
+            SPURAM_done1X     <= '1';
+            SPURAM_dataRead1x <= SS_SPURAM_dataRead;
+         end if;
+         
       end if;
    end process;
 
@@ -265,9 +275,9 @@ begin
          end if;
          
          SPURAM_done2X <= '0';
-         if (SS_SPURAM_done = '1') then
+         if (SPURAM_done1X = '1') then
             SPURAM_done2X     <= '1';
-            SPURAM_dataRead2x <= SS_SPURAM_dataRead;
+            SPURAM_dataRead2x <= SPURAM_dataRead1x;
          end if;
          
          if (ddr3_BUSY = '0') then
@@ -286,53 +296,72 @@ begin
             when IDLE =>
                savestate_pause   <= '0';
                ddr3_savestate    <= '0';
+               unstallwait       <= 1023;
                if (reset_in_1 = '1' and reset_in = '0') then
-                  state                <= LOAD_WAITSETTLE;
+                  state                <= WAITPAUSE;
+                  reset_2x             <= '1';
+                  ss_reset_2x          <= '1';
                   resetMode            <= '1';
+                  savemode             <= '0';
                   savetype_counter     <= 12;
                   settle               <= 0;
-                  sleep_savestate      <= '1';
                elsif (save = '1') then
                   resetMode            <= '0';
+                  savemode             <= '1';
                   savetype_counter     <= 0;
-                  state                <= SAVE_WAITPAUSE;
+                  state                <= WAITPAUSE;
                   header_amount        <= header_amount + 1;
                elsif (load = '1') then
-                  state                <= LOAD_WAITSETTLE;
+                  state                <= WAITPAUSE;
+                  reset_2x             <= '1';
+                  ss_reset_2x          <= '1';
                   resetMode            <= '0';
+                  savemode             <= '0';
                   savetype_counter     <= 0;
                   settle               <= 0;
-                  sleep_savestate      <= '1';
+               end if;
+            
+            when WAITPAUSE =>
+               if (settle < 8) then
+                  settle        <= settle + 1;
+               else
+                  savestate_pause  <= '1';
+                  if (system_paused = '1') then
+                     state                <= WAITIDLE;
+                     settle               <= 0;
+                  elsif (unstallwait > 0) then
+                     unstallwait <= unstallwait - 1;
+                  elsif (savemode = '0' and exeMode = '0') then
+                     reset_2x    <= '1';
+                     ss_reset_2x <= '1';
+                     unstallwait <= 1023;
+                  end if;
+               end if;
+            
+            when WAITIDLE =>
+               if (settle < 8) then
+                  settle <= settle + 1;
+               else
+                  if (SS_idle = '1') then
+                     if (savemode = '1') then
+                        state             <= SAVE_WAITSETTLE;
+                     else
+                        state             <= LOAD_WAITSETTLE;
+                     end if;
+                     settle            <= 0;
+                  else
+                     state             <= WAITPAUSE;
+                     settle            <= 0;
+                     savestate_pause   <= '0';
+                     if (savemode = '0') then
+                        reset_2x       <= '1';
+                     end if;
+                  end if;
                end if;
                
             -- #################
             -- SAVE
             -- #################
-            
-            when SAVE_WAITPAUSE =>
-               if (settle < 8) then
-                  settle <= settle + 1;
-               else
-                  savestate_pause  <= '1';
-                  if (system_paused = '1') then
-                     state                <= SAVE_WAITIDLE;
-                     settle               <= 0;
-                  end if;
-               end if;
-            
-            when SAVE_WAITIDLE =>
-               if (settle < 8) then
-                  settle <= settle + 1;
-               else
-                  if (SS_idle = '1') then
-                     state             <= SAVE_WAITSETTLE;
-                     settle            <= 0;
-                  else
-                     state             <= SAVE_WAITPAUSE;
-                     settle            <= 0;
-                     savestate_pause   <= '0';
-                  end if;
-               end if;
             
             when SAVE_WAITSETTLE =>
                if (settle < SETTLECOUNT) then
@@ -340,8 +369,11 @@ begin
                else
                   state            <= SAVEMEMORY_NEXT;
                   saving_savestate <= '1';
-                  ddr3_savestate   <= '1';
-               end if;            
+               end if;  
+
+               if (settle > (SETTLECOUNT / 2)) then
+                  ddr3_savestate    <= '1';
+               end if;               
             
             when SAVEMEMORY_NEXT =>
                if (savetype_counter < SAVETYPESCOUNT) then
@@ -470,17 +502,18 @@ begin
                if (DDR3_busy = '0') then
                   state       <= SAVEWAITHPSDONE;
                   if (increaseSSHeaderCount = '1') then
-                     unstallwait <= 16777215;
+                     unstallwait <= 67108863;
                   end if;
                end if;
              
             when SAVEWAITHPSDONE =>
-               if (unstallwait > 0) then
+               if (hps_busy = '1') then
+                  unstallwait <= 67108863;
+               elsif (unstallwait > 0) then
                   unstallwait <= unstallwait - 1;
                else
                   state            <= IDLE;
                   saving_savestate <= '0';
-                  ddr3_savestate   <= '0';
                end if;
 
             -- #################
@@ -492,9 +525,12 @@ begin
                   settle <= settle + 1;
                else
                   state             <= LOAD_HEADERAMOUNTCHECK;
-                  ddr3_savestate    <= '1';
                   ddr3_ADDR         <= std_logic_vector(to_unsigned(savestate_address, 26));
                   ddr3_RD           <= not resetMode;
+               end if;
+               
+               if (settle > (SETTLECOUNT / 2)) then
+                  ddr3_savestate    <= '1';
                end if;
                
             when LOAD_HEADERAMOUNTCHECK =>
@@ -511,8 +547,6 @@ begin
                      ss_reset_2x          <= '1';
                   else
                      state                <= IDLE;
-                     sleep_savestate      <= '0';
-                     ddr3_savestate       <= '0';
                   end if;
                end if;
             
@@ -529,10 +563,8 @@ begin
                   dwordcounter   <= 0;
                else
                   state             <= IDLE;
-                  ddr3_savestate    <= '0';
                   reset_2x          <= '1';
                   loading_ss_2x     <= '0';
-                  sleep_savestate   <= '0';
                   load_done_2x      <= not resetMode;
                end if;
             
@@ -646,7 +678,7 @@ begin
          
          reset_in_1 <= reset_in;
          if (reset_in = '1' and reset_in_1 = '0') then
-            state           <= IDLE;
+            state    <= IDLE;
          end if;
          
       end if;

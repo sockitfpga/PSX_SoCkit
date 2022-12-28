@@ -12,8 +12,17 @@ entity joypad_pad is
       reset                : in  std_logic;
       
       DSAltSwitchMode      : in  std_logic;
-      joypad               : in  joypad_t;
-      rumble               : out std_logic_vector(15 downto 0);
+      isMultitap           : in  std_logic := '0';
+      multitapDigital      : in  std_logic;
+      multitapAnalog       : in  std_logic;
+      joypad1              : in  joypad_t;
+      joypad2              : in  joypad_t;
+      joypad3              : in  joypad_t;
+      joypad4              : in  joypad_t;
+      joypad1_rumble       : out std_logic_vector(15 downto 0) := (others => '0');
+      joypad2_rumble       : out std_logic_vector(15 downto 0) := (others => '0');
+      joypad3_rumble       : out std_logic_vector(15 downto 0) := (others => '0');
+      joypad4_rumble       : out std_logic_vector(15 downto 0) := (others => '0');
       padMode              : out std_logic_vector(1 downto 0);
       portNr               : in integer range 0 to 1;
 
@@ -39,6 +48,7 @@ entity joypad_pad is
       GunX                 : in  unsigned(7 downto 0);
       GunY_scanlines       : in  unsigned(8 downto 0);
       GunAimOffscreen      : in  std_logic;
+      JustifierIrqEnable   : out std_logic_vector(1 downto 0);
       
       ss_in                : in  std_logic_vector(31 downto 0);
       ss_out               : out std_logic_vector(31 downto 0)
@@ -83,6 +93,8 @@ architecture arch of joypad_pad is
       COMMAND47,
       COMMAND4C,
       UPDATERUMBLE,
+      MULTITAP_READY,
+      MULTITAP_ID,
       ROMRESPONSE
    );
    signal controllerState : tcontrollerState := IDLE;
@@ -103,6 +115,9 @@ architecture arch of joypad_pad is
    );
    signal command : tcommands := COMMAND_NONE;
 
+   signal joypad          : joypad_t;
+
+   signal digitalPadSave  : std_logic := '0';
    signal analogPadSave   : std_logic := '0';
    signal rumbleOnFirst   : std_logic := '0';
    signal mouseSave       : std_logic := '0';
@@ -114,7 +129,8 @@ architecture arch of joypad_pad is
 
    signal prevMouseEvent  : std_logic := '0';
    signal MouseLeft_1     : std_logic := '0';
-   signal switchmode      : std_logic := '0'; 
+   signal switchmode      : std_logic := '0';
+   signal ToggleDSsave    : std_logic_vector(1 downto 0) := (others => '0');
 
    signal mouseAccX       : signed(9 downto 0) := (others => '0');
    signal mouseAccY       : signed(9 downto 0) := (others => '0');
@@ -137,12 +153,22 @@ architecture arch of joypad_pad is
       rumble         : std_logic_vector(15 downto 0);
       dsRumbleIndexS : integer range -1 to 5;
       dsRumbleIndexL : integer range -1 to 5;
+      multitapMode   : std_logic;
    end record;
    type portState_array is array(0 to 1) of portState;
-   signal portStates : portState_array := (others => ('0', '0', '0', '0', (others => '1'), (others => '0'), -1, -1));
+   signal portStates : portState_array := (others => ('0', '0', '0', '0', (others => '1'), (others => '0'), -1, -1, '0'));
+
+   type joypad_array is array(0 to 3) of joypad_t;
+   signal joypads : joypad_array;
 
    signal dsConfigModeSave  : std_logic := '0';
    signal dsAnalogModeSave  : std_logic := '0';
+
+   signal multitapModeSave  : std_logic := '0';
+   signal isMultitap_1      : std_logic := '0';
+   signal multitap_swapped  : std_logic := '0';
+   signal multitap_offCnt   : integer range 0 to 255;
+   signal joypad_index      : integer range 0 to 3;
 
    type tresponse is array (natural range <>) of std_logic_vector(7 downto 0);
    constant response : tresponse :=(
@@ -153,12 +179,17 @@ architecture arch of joypad_pad is
       x"00", x"01", x"01", x"01", x"14",        -- 46+01
       x"00", x"02", x"00", x"01", x"00",        -- 47
       x"00", x"00", x"04", x"00", x"00",        -- 4C+00
-      x"00", x"00", x"07", x"00", x"00"         -- 4C+01
+      x"00", x"00", x"07", x"00", x"00",        -- 4C+01
+      x"FF", x"FF", x"FF", x"FF",         -- multitap padding
+      x"FF", x"FF", x"FF", x"FF"
    );
 
-   signal rom_pointer : integer range 0 to 36;
-   signal bytecount   : integer range 0 to 6;
+   signal rom_pointer : integer range 0 to 44;
+   signal bytecount   : integer range 0 to 7;
    signal rumblecount : integer range 0 to 5;
+   signal multitap_counter : integer range 0 to 3 := 0;
+
+   signal multitap_valid : std_logic_vector(3 downto 0) := (others => '0');
   
 begin 
 
@@ -170,7 +201,19 @@ begin
    ss_out(3)            <= portStates(0).dsAnalogLock;  
    ss_out( 7 downto 4)  <= std_logic_vector(to_signed(portStates(0).dsRumbleIndexS,4));   
    ss_out(11 downto 8)  <= std_logic_vector(to_signed(portStates(0).dsRumbleIndexL,4));   
-   ss_out(31 downto 12) <= (others => '0');
+   ss_out(12)           <= portStates(0).multitapMode;
+   ss_out(31 downto 13) <= (others => '0');
+
+   joypad_index <=
+      0 when (isMultitap = '0' and portNr = 0) else
+      1 when (isMultitap = '0' and portNr = 1) else
+      1 when multitap_counter = 1 else
+      2 when multitap_counter = 2 else
+      3 when multitap_counter = 3 else
+      0;
+
+   joypads <= (joypad1, joypad2, joypad3, joypad4);
+   joypad  <= joypads(joypad_index);
    
    process (clk1x)
       variable mouseIncX            : signed(9 downto 0) := (others => '0');
@@ -181,6 +224,7 @@ begin
       variable newMouseAccClippedY  : signed(9 downto 0) := (others => '0');
       variable newAnalog            : signed(8 downto 0) := (others => '0');
       variable newPedal             : signed(7 downto 0) := (others => '0');
+      variable rumble               : std_logic_vector(15 downto 0) := (others => '0');
    begin
       if rising_edge(clk1x) then
       
@@ -190,13 +234,13 @@ begin
          ack <= '0';
          
          -- weak motor -> always full strength
-         rumble(7 downto 0) <= portStates(portNr).rumble(7 downto 0);
+         rumble(7 downto 0) := portStates(portNr).rumble(7 downto 0);
          
          -- strong motor: "The Left/Large motor starts spinning at circa min=50h..60h, and, once when started keeps spinning downto circa min=38h"
          if (unsigned(portStates(portNr).rumble) < 15#38#) then
-            rumble(15 downto 8) <= (others => '0');
+            rumble(15 downto 8) := (others => '0');
          else      
-            rumble(15 downto 8) <= portStates(portNr).rumble(15 downto 8);
+            rumble(15 downto 8) := portStates(portNr).rumble(15 downto 8);
          end if;
          
          -- increase analog values by 1/8 and convert from -127..127 to 0..255
@@ -222,7 +266,7 @@ begin
             controllerState <= IDLE;
             isActive        <= '0';
             
-            portStates      <= (others => ('0', '0', '0', '0', (others => '1'), (others => '0'), -1, -1));
+            portStates      <= (others => ('0', '0', '0', '0', (others => '1'), (others => '0'), -1, -1, '0'));
             
             -- only save state for slot 1
             portStates(0).dsConfigMode   <= ss_in(0);          
@@ -232,13 +276,31 @@ begin
             portStates(0).dsRumbleIndexS <= to_integer(signed(ss_in( 7 downto 4)));         
             portStates(0).dsRumbleIndexL <= to_integer(signed(ss_in(11 downto 8)));         
 
+            portStates(0).multitapMode <= ss_in(12);
+
+            multitap_valid <= (others => '0');
+
+            joypad1_rumble <= (others => '0');
+            joypad2_rumble <= (others => '0');
+            joypad3_rumble <= (others => '0');
+            joypad4_rumble <= (others => '0');
+            
+            JustifierIrqEnable <= "00";
+
          elsif (ce = '1') then
          
+            case (joypad_index) is
+               when 0 => joypad1_rumble <= rumble;
+               when 1 => joypad2_rumble <= rumble;
+               when 2 => joypad3_rumble <= rumble;
+               when 3 => joypad4_rumble <= rumble;
+            end case;
+
             if (selected = '0') then
                isActive        <= '0';
                controllerState <= IDLE;
                command         <= COMMAND_NONE;
-            elsif (joypad.PadPortDS = '1') then
+            elsif (joypad.PadPortDS = '1' and isMultitap = '0') then
                if (portStates(portNr).dsAnalogLock = '0') then
                
                   -- switch from mouseclick/touchpad
@@ -248,6 +310,13 @@ begin
                         portStates(0).dsAnalogMode <= not portStates(0).dsAnalogMode;
                         portStates(0).dsRumbleMode <= '0';
                      end if;
+                  end if;
+                  
+                  -- switch from button
+                  if (ToggleDSsave(portNr) = '1') then
+                     ToggleDSsave(portNr) <= '0';
+                     portStates(portNr).dsAnalogMode <= not portStates(portNr).dsAnalogMode;
+                     portStates(portNr).dsRumbleMode <= '0';
                   end if;
                   
                   -- switch from button combo
@@ -276,9 +345,14 @@ begin
             end if;
             
             MouseLeft_1 <= MouseLeft;
-            if (MouseLeft = '1' and MouseLeft_1 = '0') then
+            if (joypad1.PadPortDS = '1' and isMultitap = '0' and MouseLeft = '1' and MouseLeft_1 = '0') then
                switchmode <= '1';
             end if;
+            
+            if (joypad1.ToggleDS = '1') then ToggleDSsave(0) <= '1'; end if;
+            if (joypad2.ToggleDS = '1') then ToggleDSsave(1) <= '1'; end if;
+            -- if (joypad3.ToggleDS = '1') then ToggleDSsave(2) <= '1'; end if; -- not yet usuable
+            -- if (joypad4.ToggleDS = '1') then ToggleDSsave(3) <= '1'; end if; -- not yet usuable
 
             prevMouseEvent  <= MouseEvent;
             if (prevMouseEvent /= MouseEvent) then
@@ -316,13 +390,28 @@ begin
                if (portStates(portNr).dsRumbleIndexL = -1) then portStates(portNr).rumble(15 downto 8) <= (others => '0'); end if;
             end if;
          
-            if (actionNext = '1' and transmitting = '1') then
-               if (selected = '1' and joypad.PadPortEnable = '1') then
+            -- turning off multitap must disconnect any pad for some time to give the game the chance to recognize the switch
+            isMultitap_1 <= isMultitap;
+            if (isMultitap = '0' and isMultitap_1 = '1') then
+               multitap_swapped <= '1';
+               multitap_offCnt  <= 255;
+               isActive         <= '0';
+            elsif (actionNext = '1' and transmitting = '1' and selected = '1' and joypad.PadPortEnable = '1') then
+               if (multitap_offCnt > 0) then
+                  multitap_offCnt <= multitap_offCnt - 1;
+               else
+                  multitap_swapped <= '0';
+               end if;
+            end if;
+         
+            if (actionNext = '1' and transmitting = '1' and multitap_swapped = '0') then
+               if (selected = '1' and ((isMultitap = '0' and joypad.PadPortEnable = '1') or (isMultitap = '1' and portNr = 0))) then
                   if (isActive = '0' and slotIdle = '1') then
                      if (controllerState = IDLE and transmitValue = x"01") then
                         controllerState <= READY;
                         isActive        <= '1';
-                        ack             <= '1'; 
+                        ack             <= '1';
+                        digitalPadSave  <= joypad.PadPortDigital;
                         analogPadSave   <= joypad.PadPortAnalog;
                         mouseSave       <= joypad.PadPortMouse;
                         gunConSave      <= joypad.PadPortGunCon;
@@ -334,6 +423,7 @@ begin
                         receiveBuffer   <= x"FF";
                         dsConfigModeSave  <= portStates(portNr).dsConfigMode;
                         dsAnalogModeSave  <= portStates(portNr).dsAnalogMode;
+                        multitapModeSave  <= portStates(portNr).multitapMode;
                      end if;
                   elsif (isActive = '1') then
                      case (controllerState) is
@@ -343,6 +433,7 @@ begin
                               controllerState <= READY;
                               isActive        <= '1';
                               ack             <= '1';
+                              digitalPadSave  <= joypad.PadPortDigital;
                               analogPadSave   <= joypad.PadPortAnalog;
                               mouseSave       <= joypad.PadPortMouse;
                               gunConSave      <= joypad.PadPortGunCon;
@@ -354,12 +445,43 @@ begin
                               receiveBuffer   <= x"FF";
                               dsConfigModeSave  <= portStates(portNr).dsConfigMode;
                               dsAnalogModeSave  <= portStates(portNr).dsAnalogMode;
+                              multitapModeSave  <= portStates(portNr).multitapMode;
                            end if;
                            
 -- ##############################################################################
 -- #################### Common 
 -- ##############################################################################
                            
+                        when MULTITAP_READY =>
+                           if (multitap_valid(multitap_counter) = '1') then
+                              if (multitapAnalog = '1') then
+                                  receiveBuffer   <= x"73";
+                              else
+                                  receiveBuffer   <= x"41";
+                              end if;
+                              controllerState <= MULTITAP_ID;
+                           else
+                              receiveBuffer   <= x"FF";
+                              rom_pointer     <= 36; -- just lots of FF padding
+                              bytecount       <= 7;
+                              controllerState <= ROMRESPONSE;
+
+                              if (multitap_counter = 3) then
+                                 nextState       <= IDLE;
+                              else
+                                 nextState       <= MULTITAP_READY;
+                                 multitap_counter <= multitap_counter + 1;
+                              end if;
+                           end if;
+
+                           if (transmitValue = x"42") then
+                              multitap_valid(multitap_counter) <= '1';
+                           else
+                              multitap_valid(multitap_counter) <= '0';
+                           end if;
+
+                           ack             <= '1';
+                           receiveValid    <= '1';
                         when READY => 
                            if (transmitValue = x"42") then
                               command <= COMMAND_READ_INPUTS;
@@ -454,8 +576,49 @@ begin
                               controllerState <= IDLE;
                               command <= COMMAND_UNKNOWN;
                            end if;
+
+                           if (isMultitap = '1') then
+                              if (transmitValue = x"42") then
+                                 command <= COMMAND_READ_INPUTS;
+                                 if (multitapModeSave = '1') then
+                                    receiveBuffer   <= x"80";
+                                 else
+                                    if (multitapAnalog = '1') then
+                                        receiveBuffer   <= x"73";
+                                    else
+                                        receiveBuffer   <= x"41";
+                                    end if;
+                                 end if;
+                                 controllerState <= ID;
+                                 ack             <= '1';
+                                 receiveValid    <= '1';
+                              elsif (multitapModeSave = '1') then
+                                 command <= COMMAND_UNKNOWN;
+                                 receiveBuffer   <= x"80";
+                                 controllerState <= ID;
+                                 ack             <= '1';
+                                 receiveValid    <= '1';
+                              else
+                                 controllerState <= IDLE;
+                                 command <= COMMAND_UNKNOWN;
+                                 ack <= '0';
+                                 receiveValid <= '0';
+                              end if;
+                          end if;
                            
+                        when MULTITAP_ID =>
+                           receiveBuffer   <= x"5A";
+                           controllerState <= BUTTONLSB;
+                           ack             <= '1';
+                           receiveValid    <= '1';
                         when ID => 
+                           if (isMultitap = '1') then
+                              if (transmitValue = x"01") then
+                                 portStates(portNr).multitapMode <= '1';
+                              else
+                                 portStates(portNr).multitapMode <= '0';
+                              end if;
+                           end if;
                            receiveBuffer   <= x"5A";
                            if (mouseSave = '1') then
                                controllerState <= MOUSEBUTTONSLSB;
@@ -488,6 +651,21 @@ begin
                            end if;
 
                            ack             <= '1';
+                           if (isMultitap = '1') then
+                              if (multitapModeSave = '1') then
+                                 controllerState <= MULTITAP_READY;
+                                 multitap_counter <= 0;
+                              else
+                                 controllerState <= BUTTONLSB;
+                              end if;
+                           end if;
+
+                           if (command = COMMAND_UNKNOWN) then
+                              controllerState <= IDLE;
+                           else
+                              ack             <= '1';
+                           end if;
+
                            receiveValid    <= '1';
                            
 -- ##############################################################################
@@ -503,11 +681,20 @@ begin
                            receiveBuffer(5) <= not joypad.KeyRight;
                            receiveBuffer(6) <= not joypad.KeyDown;
                            receiveBuffer(7) <= not joypad.KeyLeft;
+                           
+                           if (digitalPadSave = '1') then
+                              if (to_integer(joypad.Analog1X) <= -64) then receiveBuffer(7) <= '0'; end if;
+                              if (to_integer(joypad.Analog1X) >=  64) then receiveBuffer(5) <= '0'; end if;
+                              if (to_integer(joypad.Analog1Y) <= -64) then receiveBuffer(4) <= '0'; end if;
+                              if (to_integer(joypad.Analog1Y) >=  64) then receiveBuffer(6) <= '0'; end if;
+                           end if;
+                           
                            if (neGconSave = '1') then
                               controllerState  <= NEGCONBUTTONMSB;
                            else
                               controllerState  <= BUTTONMSB;
                            end if;
+                           
                            -- Analog Joystick does not have L3 and R3 buttons
                            if (analogStickSave = '1') then
                                receiveBuffer(2 downto 1) <= "11";
@@ -545,7 +732,7 @@ begin
                            receiveBuffer(6) <= not joypad.KeyCross;
                            receiveBuffer(7) <= not joypad.KeySquare;
                            receiveValid     <= '1';
-                           if (analogPadSave = '1' or dsAnalogModeSave = '1' or dsConfigModeSave = '1' or analogStickSave = '1') then
+                           if (analogPadSave = '1' or dsAnalogModeSave = '1' or dsConfigModeSave = '1' or analogStickSave = '1' or multitapAnalog = '1') then
                               controllerState <= ANALOGRIGHTX;
                               ack <= '1';
                            else
@@ -564,6 +751,26 @@ begin
                                     portStates(portNr).rumble <= X"00FF";
                                  end if;
                               end if;
+                           end if;
+
+                           if (multitapDigital = '1') then
+                               if (multitapModeSave = '1') then
+                                  rom_pointer     <= 36; -- just lots of FF padding
+                                  bytecount       <= 4;
+                                  controllerState <= ROMRESPONSE; 
+
+                                  if (multitap_counter = 3) then
+                                     nextState       <= IDLE;
+                                  else
+                                     nextState       <= MULTITAP_READY;
+                                     multitap_counter <= multitap_counter + 1;
+                                  end if;
+
+                                  ack <= '1';
+                               else
+                                  controllerState <= IDLE;
+                                  ack <= '1';
+                               end if;
                            end if;
                            
                         when ANALOGRIGHTX => 
@@ -642,6 +849,12 @@ begin
                                  if (transmitValue(0) = '1') then portStates(portNr).rumble(7 downto 0) <= x"FF"; end if;
                               end if;
                               if (portStates(portNr).dsRumbleIndexL = 5) then portStates(portNr).rumble(15 downto 8) <= transmitValue; end if;
+                           end if;
+
+                           if (multitapAnalog = '1' and multitapModeSave = '1' and multitap_counter /= 3) then
+                              controllerState       <= MULTITAP_READY;
+                              multitap_counter      <= multitap_counter + 1;
+                              ack <= '1';
                            end if;
                            
 -- ##############################################################################
@@ -870,13 +1083,13 @@ begin
                            controllerState <= JUSTIFBUTTONSMSB;
                            ack             <= '1';
                            receiveValid    <= '1';
-
-                           if joypad.KeyTriangle = '1' or GunAimOffscreen = '1' then
-                              gunOffscreen <= '1';
-                           else
-                              gunOffscreen <= '0';
+                           
+                           if (joypad_index = 0) then
+                              JustifierIrqEnable(0) <= transmitValue(4);
+                           elsif (joypad_index = 1) then
+                              JustifierIrqEnable(1) <= transmitValue(4);
                            end if;
-
+                           
                            receiveBuffer(0) <= '1';
                            receiveBuffer(1) <= '1';
                            receiveBuffer(2) <= '1';

@@ -15,6 +15,7 @@ entity spu is
       reset                : in  std_logic;
       
       SPUon                : in  std_logic;
+      SPUIRQTrigger        : in  std_logic;
       useSDRAM             : in  std_logic;
       REPRODUCIBLESPUIRQ   : in  std_logic;
       REPRODUCIBLESPUDMA   : in  std_logic;
@@ -68,6 +69,7 @@ entity spu is
       
       -- savestates
       SS_reset             : in  std_logic;
+      loading_savestate    : in  std_logic;
       SS_DataWrite         : in  std_logic_vector(31 downto 0);
       SS_Adr               : in  unsigned(8 downto 0);
       SS_wren              : in  std_logic;
@@ -237,6 +239,7 @@ architecture arch of spu is
    signal ram_dataWrite       : std_logic_vector(15 downto 0) := (others => '0');
    signal ram_Adr             : std_logic_vector(18 downto 0) := (others => '0');
    signal ram_request         : std_logic := '0';
+   signal ram_check_irq       : std_logic := '0';
    signal ram_rnw             : std_logic := '0';
    signal ram_dataRead        : std_logic_vector(15 downto 0);
    signal ram_done            : std_logic;
@@ -303,25 +306,28 @@ architecture arch of spu is
       adpcmDecodePtr   : unsigned(5 downto 0);
       adsrphase        : unsigned(2 downto 0);
       adsrTicks        : unsigned(23 downto 0);
+      firstBlock       : std_logic;
+      ignoreLoopWB     : std_logic;
    end record;
    
-   signal voice        : voiceRecord := ((others => '0'), (others => '0'), (others => '0'), (others => '0'), (others => '0'), (others => '0'), (others => '0'));
+   signal voice        : voiceRecord := ((others => '0'), (others => '0'), (others => '0'), (others => '0'), (others => '0'), (others => '0'), (others => '0'), '0', '0');
    
    signal voice_lastVolume  : signed(15 downto 0);
    signal voice_lastVolume1 : signed(15 downto 0);
    signal voice_lastVolume3 : signed(15 downto 0);
    
    signal voice_adsrWrite   : std_logic_vector(23 downto 0) := (others => '0');
+   signal voice_repeatWrite : std_logic_vector(23 downto 0) := (others => '0');
    
    -- voicerecordram
    signal RamVoiceRecord_addrA : unsigned(4 downto 0) := (others => '0');
-   signal RamVoiceRecord_dataA : std_logic_vector(100 downto 0) := (others => '0');
+   signal RamVoiceRecord_dataA : std_logic_vector(102 downto 0) := (others => '0');
    signal RamVoiceRecord_write : std_logic := '0';     
    
    type tvoicerecords_addrB is array(0 to 1) of unsigned(4 downto 0);
    signal RamVoiceRecord_addrB : tvoicerecords_addrB;
    
-   type tvoicerecords_dataB is array(0 to 1) of std_logic_vector(100 downto 0);
+   type tvoicerecords_dataB is array(0 to 1) of std_logic_vector(102 downto 0);
    signal RamVoiceRecord_dataB : tvoicerecords_dataB; 
    
    --type tvoicearray is array(0 to 23) of voiceRecord;
@@ -478,10 +484,11 @@ architecture arch of spu is
 
    -- savestates
    type t_ssarray is array(0 to 63) of std_logic_vector(31 downto 0);
-   signal ss_in  : t_ssarray := (others => (others => '0'));
    signal ss_out : t_ssarray := (others => (others => '0'));
       
-   signal ss_voice_loading : std_logic := '0';
+   signal ss_voice_loading    : std_logic := '0';
+   
+   signal ss_timeout          : unsigned(23 downto 0);
       
    -- debug_out
    type outtype is record
@@ -636,7 +643,7 @@ begin
       itagramVOICECORDS : entity mem.RamMLAB
       GENERIC MAP 
       (
-         width         => 101,
+         width         => 103,
          widthad       => 5,
          width_byteena => 1
       )
@@ -802,6 +809,7 @@ begin
          EnvCounterRam_write     <= '0';
                
          ram_request             <= '0';
+         ram_check_irq           <= '0';
          ram_isTransfer          <= '0';
          ram_isVoice             <= '0';
          ram_isReverb            <= '0';
@@ -849,6 +857,8 @@ begin
             stashedSamples       <= 0;
             
             FifoOut_Cnt          <= 0;
+            FifoOut_reset        <= '1';
+            FifoIn_reset         <= '1';
                
             sound_out_left       <= (others => '0');
             sound_out_right      <= (others => '0');
@@ -859,72 +869,139 @@ begin
             cd_next_left         <= (others => '0');
             cd_next_right        <= (others => '0');
                
-            sampleticks          <= (others => '0'); --unsigned(ss_in(1)(9 downto 0));
-            capturePosition      <= unsigned(ss_in(2)(9 downto 0));
-            ramTransferAddr      <= unsigned(ss_in(3)(18 downto 0));
-            reverbCurrentAddress <= unsigned(ss_in(4)(17 downto 0));
-            reverbRight          <= ss_in(4)(31);
-            noiseLevel           <= unsigned(ss_in(5)(15 downto 0));
-            noiseCnt             <= unsigned(ss_in(6)(31 downto 0));
+            sampleticks          <= to_unsigned(512, 10); --unsigned(ss_in(1)(9 downto 0));
             
-            IRQ9                 <= ss_in(40)(22);
+            if (loading_savestate = '0') then
+               capturePosition      <= (others => '0');
+               ramTransferAddr      <= (others => '0');
+               reverbCurrentAddress <= (others => '0');
+               reverbRight          <= '0';
+               noiseLevel           <= x"0001";
+               noiseCnt             <= (others => '0');
                
-            KEYON                <= ss_in(32);
-            KEYOFF               <= ss_in(33);
-            PITCHMODENA          <= ss_in(34);
-            NOISEMODE            <= ss_in(35);
-            REVERBON             <= ss_in(36);
-            ENDX                 <= ss_in(37);
+               IRQ9                 <= '0';
                   
-            VOLUME_LEFT          <= ss_in(38)(15 downto 0);
-            VOLUME_RIGHT         <= ss_in(38)(31 downto 16);
-            TRANSFERADDR         <= ss_in(39)(15 downto 0);
-            CNT		            <= ss_in(39)(31 downto 16);
-            TRANSFER_CNT         <= ss_in(40)(15 downto 0);
-            CDAUDIO_VOL_L        <= ss_in(41)(15 downto 0);
-            CDAUDIO_VOL_R        <= ss_in(41)(31 downto 16);
-            EXT_VOL_L	         <= ss_in(42)(15 downto 0);
-            EXT_VOL_R	         <= ss_in(42)(31 downto 16);
-            CURVOL_L	            <= ss_in(43)(15 downto 0);
-            CURVOL_R	            <= ss_in(43)(31 downto 16);
-            IRQ_ADDR             <= ss_in(44)(15 downto 0);
-            REVERB_vLOUT         <= ss_in(44)(31 downto 16);
-            REVERB_vROUT         <= ss_in(45)(15 downto 0);
-            REVERB_mBASE         <= ss_in(45)(31 downto 16);
-            REVERB_dAPF1         <= ss_in(46)(15 downto 0);
-            REVERB_dAPF2         <= ss_in(46)(31 downto 16);
-            REVERB_vIIR          <= ss_in(47)(15 downto 0);
-            REVERB_vCOMB1        <= ss_in(47)(31 downto 16);
-            REVERB_vCOMB2        <= ss_in(48)(15 downto 0);
-            REVERB_vCOMB3        <= ss_in(48)(31 downto 16);
-            REVERB_vCOMB4        <= ss_in(49)(15 downto 0);
-            REVERB_vWALL         <= ss_in(49)(31 downto 16);
-            REVERB_vAPF1         <= ss_in(50)(15 downto 0);
-            REVERB_vAPF2         <= ss_in(50)(31 downto 16);
-            REVERB_mLSAME        <= ss_in(51)(15 downto 0);
-            REVERB_mRSAME        <= ss_in(51)(31 downto 16);
-            REVERB_mLCOMB1       <= ss_in(52)(15 downto 0);
-            REVERB_mRCOMB1       <= ss_in(52)(31 downto 16);
-            REVERB_mLCOMB2       <= ss_in(53)(15 downto 0);
-            REVERB_mRCOMB2       <= ss_in(53)(31 downto 16);
-            REVERB_dLSAME        <= ss_in(54)(15 downto 0);
-            REVERB_dRSAME        <= ss_in(54)(31 downto 16);
-            REVERB_mLDIFF        <= ss_in(55)(15 downto 0);
-            REVERB_mRDIFF        <= ss_in(55)(31 downto 16);
-            REVERB_mLCOMB3       <= ss_in(56)(15 downto 0);
-            REVERB_mRCOMB3       <= ss_in(56)(31 downto 16);
-            REVERB_mLCOMB4       <= ss_in(57)(15 downto 0);
-            REVERB_mRCOMB4       <= ss_in(57)(31 downto 16);
-            REVERB_dLDIFF        <= ss_in(58)(15 downto 0);
-            REVERB_dRDIFF        <= ss_in(58)(31 downto 16);
-            REVERB_mLAPF1        <= ss_in(59)(15 downto 0);
-            REVERB_mRAPF1        <= ss_in(59)(31 downto 16);
-            REVERB_mLAPF2        <= ss_in(60)(15 downto 0);
-            REVERB_mRAPF2        <= ss_in(60)(31 downto 16);
-            REVERB_vLIN          <= ss_in(61)(15 downto 0);
-            REVERB_vRIN          <= ss_in(61)(31 downto 16);
+               KEYON                <= (others => '0');
+               KEYOFF               <= (others => '0');
+               PITCHMODENA          <= (others => '0');
+               NOISEMODE            <= (others => '0');
+               REVERBON             <= (others => '0');
+               ENDX                 <= (others => '0');
+                     
+               VOLUME_LEFT          <= (others => '0');
+               VOLUME_RIGHT         <= (others => '0');
+               TRANSFERADDR         <= (others => '0');
+               CNT		            <= (others => '0');
+               TRANSFER_CNT         <= (others => '0');
+               CDAUDIO_VOL_L        <= (others => '0');
+               CDAUDIO_VOL_R        <= (others => '0');
+               EXT_VOL_L	         <= (others => '0');
+               EXT_VOL_R	         <= (others => '0');
+               CURVOL_L	            <= (others => '0');
+               CURVOL_R	            <= (others => '0');
+               IRQ_ADDR             <= (others => '0');
+               REVERB_vLOUT         <= (others => '0');
+               REVERB_vROUT         <= (others => '0');
+               REVERB_mBASE         <= (others => '0');
+               REVERB_dAPF1         <= (others => '0');
+               REVERB_dAPF2         <= (others => '0');
+               REVERB_vIIR          <= (others => '0');
+               REVERB_vCOMB1        <= (others => '0');
+               REVERB_vCOMB2        <= (others => '0');
+               REVERB_vCOMB3        <= (others => '0');
+               REVERB_vCOMB4        <= (others => '0');
+               REVERB_vWALL         <= (others => '0');
+               REVERB_vAPF1         <= (others => '0');
+               REVERB_vAPF2         <= (others => '0');
+               REVERB_mLSAME        <= (others => '0');
+               REVERB_mRSAME        <= (others => '0');
+               REVERB_mLCOMB1       <= (others => '0');
+               REVERB_mRCOMB1       <= (others => '0');
+               REVERB_mLCOMB2       <= (others => '0');
+               REVERB_mRCOMB2       <= (others => '0');
+               REVERB_dLSAME        <= (others => '0');
+               REVERB_dRSAME        <= (others => '0');
+               REVERB_mLDIFF        <= (others => '0');
+               REVERB_mRDIFF        <= (others => '0');
+               REVERB_mLCOMB3       <= (others => '0');
+               REVERB_mRCOMB3       <= (others => '0');
+               REVERB_mLCOMB4       <= (others => '0');
+               REVERB_mRCOMB4       <= (others => '0');
+               REVERB_dLDIFF        <= (others => '0');
+               REVERB_dRDIFF        <= (others => '0');
+               REVERB_mLAPF1        <= (others => '0');
+               REVERB_mRAPF1        <= (others => '0');
+               REVERB_mLAPF2        <= (others => '0');
+               REVERB_mRAPF2        <= (others => '0');
+               REVERB_vLIN          <= (others => '0');
+               REVERB_vRIN          <= (others => '0');
+            end if;
             
          elsif (SS_wren = '1') then
+            
+            if (to_integer(SS_Adr) =  2) then capturePosition      <= unsigned(SS_DataWrite(9 downto 0));  end if;
+            if (to_integer(SS_Adr) =  3) then ramTransferAddr      <= unsigned(SS_DataWrite(18 downto 0)); end if;
+            if (to_integer(SS_Adr) =  4) then reverbCurrentAddress <= unsigned(SS_DataWrite(17 downto 0)); end if;
+            if (to_integer(SS_Adr) =  4) then reverbRight          <= SS_DataWrite(31);                    end if;
+            if (to_integer(SS_Adr) =  5) then noiseLevel           <= unsigned(SS_DataWrite(15 downto 0)); end if;
+            if (to_integer(SS_Adr) =  6) then noiseCnt             <= unsigned(SS_DataWrite(31 downto 0)); end if;
+                                                                                               
+            if (to_integer(SS_Adr) = 40) then IRQ9                 <= SS_DataWrite(22);                    end if;
+                                                                                                       
+            if (to_integer(SS_Adr) = 32) then KEYON                <= SS_DataWrite;                        end if;
+            if (to_integer(SS_Adr) = 33) then KEYOFF               <= SS_DataWrite;                        end if;
+            if (to_integer(SS_Adr) = 34) then PITCHMODENA          <= SS_DataWrite;                        end if;
+            if (to_integer(SS_Adr) = 35) then NOISEMODE            <= SS_DataWrite;                        end if;
+            if (to_integer(SS_Adr) = 36) then REVERBON             <= SS_DataWrite;                        end if;
+            if (to_integer(SS_Adr) = 37) then ENDX                 <= SS_DataWrite;                        end if;
+                                                                                                 
+            if (to_integer(SS_Adr) = 38) then VOLUME_LEFT          <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 38) then VOLUME_RIGHT         <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 39) then TRANSFERADDR         <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 39) then CNT                  <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 40) then TRANSFER_CNT         <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 41) then CDAUDIO_VOL_L        <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 41) then CDAUDIO_VOL_R        <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 42) then EXT_VOL_L            <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 42) then EXT_VOL_R            <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 43) then CURVOL_L             <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 43) then CURVOL_R             <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 44) then IRQ_ADDR             <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 44) then REVERB_vLOUT         <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 45) then REVERB_vROUT         <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 45) then REVERB_mBASE         <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 46) then REVERB_dAPF1         <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 46) then REVERB_dAPF2         <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 47) then REVERB_vIIR          <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 47) then REVERB_vCOMB1        <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 48) then REVERB_vCOMB2        <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 48) then REVERB_vCOMB3        <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 49) then REVERB_vCOMB4        <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 49) then REVERB_vWALL         <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 50) then REVERB_vAPF1         <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 50) then REVERB_vAPF2         <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 51) then REVERB_mLSAME        <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 51) then REVERB_mRSAME        <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 52) then REVERB_mLCOMB1       <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 52) then REVERB_mRCOMB1       <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 53) then REVERB_mLCOMB2       <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 53) then REVERB_mRCOMB2       <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 54) then REVERB_dLSAME        <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 54) then REVERB_dRSAME        <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 55) then REVERB_mLDIFF        <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 55) then REVERB_mRDIFF        <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 56) then REVERB_mLCOMB3       <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 56) then REVERB_mRCOMB3       <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 57) then REVERB_mLCOMB4       <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 57) then REVERB_mRCOMB4       <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 58) then REVERB_dLDIFF        <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 58) then REVERB_dRDIFF        <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 59) then REVERB_mLAPF1        <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 59) then REVERB_mRAPF1        <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 60) then REVERB_mLAPF2        <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 60) then REVERB_mRAPF2        <= SS_DataWrite(31 downto 16);          end if;
+            if (to_integer(SS_Adr) = 61) then REVERB_vLIN          <= SS_DataWrite(15 downto 0);           end if;
+            if (to_integer(SS_Adr) = 61) then REVERB_vRIN          <= SS_DataWrite(31 downto 16);          end if;
             
             if (SS_Adr >= 64 and SS_Adr < 256) then
                RamVoice_write <= '1';
@@ -961,6 +1038,8 @@ begin
                      
                   when "11" =>
                      RamVoiceRecord_dataA(100 downto 77) <= SS_DataWrite(23 downto 0); -- voice.adsrTicks
+                     RamVoiceRecord_dataA(101)           <= SS_DataWrite(24);          -- voice.firstBlock
+                     RamVoiceRecord_dataA(102)           <= SS_DataWrite(25);          -- voice.ignoreLoopWB
                      RamVoiceRecord_write <= '1';
                   
                   when others =>
@@ -973,7 +1052,7 @@ begin
             
             envelope_startnext <= '0';
             
-            if (ram_request = '1' and cnt(15) = '1' and cnt(6) = '1' and (IRQ_ADDR = ram_Adr(18 downto 3)) and irq9 = '0') then
+            if ((ram_request = '1' or ram_check_irq = '1') and cnt(15) = '1' and cnt(6) = '1' and (IRQ_ADDR = ram_Adr(18 downto 3)) and irq9 = '0') then
                if (irqVoicetrigger = '1' or (state /= VOICE_EVALHEADER and state /= VOICE_EVALSAMPLE)) then
                   if (REPRODUCIBLESPUIRQ = '1') then
                      irqSaved <= '1';
@@ -981,6 +1060,15 @@ begin
                      IRQ9 <= '1';
                      irqOut <= '1';
                   end if;
+               end if;
+            end if;
+            
+            if (SPUIRQTrigger = '1') then
+               if (REPRODUCIBLESPUIRQ = '1') then
+                  irqSaved <= '1';
+               else
+                  IRQ9 <= '1';
+                  irqOut <= '1';
                end if;
             end if;
          
@@ -992,7 +1080,8 @@ begin
                   RamVoice_addrA <= bus_addr(8 downto 1);
 
                   case (bus_addr(3 downto 0)) is
-                     when x"8" | x"A" => voice_adsrWrite(to_integer(bus_addr(8 downto 4))) <= '1';
+                     when x"8" | x"A" => voice_adsrWrite(to_integer(bus_addr(8 downto 4)))   <= '1';
+                     when x"E"        => voice_repeatWrite(to_integer(bus_addr(8 downto 4))) <= '1';
                      when others => null;
                   end case;
                   
@@ -1399,12 +1488,23 @@ begin
                      voice.adpcmDecodePtr <= unsigned(RamVoiceRecord_dataB(0)( 73 downto  68));
                      voice.adsrphase      <= unsigned(RamVoiceRecord_dataB(0)( 76 downto  74));
                      voice.adsrTicks      <= unsigned(RamVoiceRecord_dataB(0)(100 downto  77));
+                     voice.firstBlock     <= RamVoiceRecord_dataB(0)(101);
+                     voice.ignoreLoopWB   <= RamVoiceRecord_dataB(0)(102);
                         
                      reset_adsr <= '0';
                      if (voice_adsrWrite(index) = '1') then
                         voice_adsrWrite(index) <= '0'; 
                         reset_adsr             <= '1';
                      end if;
+                     
+                     if (voice_repeatWrite(index) = '1') then
+                        voice_repeatWrite(index) <= '0'; 
+                        if (RamVoiceRecord_dataB(0)(101) = '0') then
+                           voice.ignoreLoopWB <= '1';
+                        end if;
+                     end if;
+                     
+                     
                   end if;
                      
                when VOICE_READHEADER =>
@@ -1451,7 +1551,7 @@ begin
                      loopEnd      <= ram_dataRead(8);
                      loopRepeat   <= ram_dataRead(9);
                      updateRepeat <= '0';
-                     if (ram_dataRead(10) = '1' and voice.adpcmDecodePtr = 0) then -- write ADPCM Repeat Address
+                     if (ram_dataRead(10) = '1' and voice.adpcmDecodePtr = 0 and voice.ignoreLoopWB = '0') then -- write ADPCM Repeat Address
                         updateRepeat <= '1';
                      end if;
                      volumeSetting      <= unsigned(RamVoice_dataB(1));
@@ -1669,6 +1769,7 @@ begin
                      RamVoice_addrA <= to_unsigned((index * 8) + 6, 8); 
                      
                      if (voice.adpcmSamplePos(19 downto 12) >= 28) then
+                        voice.firstBlock      <= '0';
                         voice.adpcmSamplePos  <= voice.adpcmSamplePos - 114688; -- (28 << 12)
                         voice.AdpcmDecodePtr  <= (others => '0');
                         --adpcmSamples(index,0) <= adpcmSamples(index,28);
@@ -1699,31 +1800,33 @@ begin
                when VOICE_CHECKKEY =>
                   state <= VOICE_END;
                
-                  if (KEYON(index) = '1') then
-                     KEYON(index)           <= '0';
-                     ENDX(index)            <= '0';
-                     voice_adsrWrite(index) <= '0'; 
-                     voice.adpcmDecodePtr   <= (others => '0');
-                     voice.currentAddr      <= unsigned(RamVoice_dataB(1)(15 downto 1)) & '0';
-                     voice.adsrphase        <= ADSRPHASE_ATTACK;
-                     voice.adpcmSamplePos   <= (others => '0');
-                     voice.adpcmLast0       <= (others => '0');
-                     voice.adpcmLast1       <= (others => '0');
-                     voice.adsrTicks        <= adsr_ticks(ADSR_ATTACK);
-                     --adpcmSamples(index,0)  <= (others => '0');
-                     --adpcmSamples(index,1)  <= (others => '0');
-                     --adpcmSamples(index,2)  <= (others => '0');
-                     adpcm_ram_address_a    <= to_unsigned(index, 5) & "000";
-                     adpcm_ram_data_a       <= (others => (others => '0'));
-                     adpcm_ram_wren_a       <= "0111";
-                  end if;   
-                  
                   if (KEYOFF(index) = '1') then
                      KEYOFF(index) <= '0';
                      if (voice.adsrphase /= ADSRPHASE_OFF and voice.adsrphase /= ADSR_RELEASE) then
                         voice.adsrphase <= ADSRPHASE_RELEASE;
                         voice.adsrTicks <= adsr_ticks(ADSR_RELEASE);
                      end if;
+                  end if;  
+               
+                  if (KEYON(index) = '1') then
+                     KEYON(index)            <= '0';
+                     ENDX(index)             <= '0';
+                     voice_adsrWrite(index)  <= '0'; 
+                     voice.firstBlock        <= '1'; 
+                     voice.ignoreLoopWB      <= '0'; 
+                     voice.adpcmDecodePtr    <= (others => '0');
+                     voice.currentAddr       <= unsigned(RamVoice_dataB(1)(15 downto 1)) & '0';
+                     voice.adsrphase         <= ADSRPHASE_ATTACK;
+                     voice.adpcmSamplePos    <= (others => '0');
+                     voice.adpcmLast0        <= (others => '0');
+                     voice.adpcmLast1        <= (others => '0');
+                     voice.adsrTicks         <= adsr_ticks(ADSR_ATTACK);
+                     --adpcmSamples(index,0)  <= (others => '0');
+                     --adpcmSamples(index,1)  <= (others => '0');
+                     --adpcmSamples(index,2)  <= (others => '0');
+                     adpcm_ram_address_a     <= to_unsigned(index, 5) & "000";
+                     adpcm_ram_data_a        <= (others => (others => '0'));
+                     adpcm_ram_wren_a        <= "0111";
                   end if;   
                   
                   -- spu off
@@ -1744,24 +1847,25 @@ begin
                   if (index = 1) then voice_lastVolume1 <= voice_lastVolume; end if;
                   if (index = 3) then voice_lastVolume3 <= voice_lastVolume; end if;
                   
+                  ram_Adr         <= std_logic_vector(ramTransferAddr);
+                  
                   if (CNT(5 downto 4) = "11" and FifoOut_NearFull = '0') then
                      state           <= RAM_READ;
                      ram_request     <= '1';
                      ram_isTransfer  <= '1';
                      ram_rnw         <= '1';
-                     ram_Adr         <= std_logic_vector(ramTransferAddr);
                      ramTransferAddr <= ramTransferAddr + 2;
-                  elsif ((CNT(5 downto 4) = "01" or CNT(5 downto 4) = "10") and FifoIn_Empty = '0') then
+                  elsif (FifoIn_Empty = '0') then
                      state           <= RAM_WRITE;
                      ram_request     <= '1';
                      ram_isTransfer  <= '1';
                      ram_rnw         <= '0';
-                     ram_Adr         <= std_logic_vector(ramTransferAddr);
                      ram_dataWrite   <= FifoIn_Dout;
                      FifoIn_Rd       <= '1';
                      ramTransferAddr <= ramTransferAddr + 2;
                   else
-                     state <= RAM_WAIT;
+                     state         <= RAM_WAIT;
+                     ram_check_irq <= '1'; -- seperate signal, so there is no useless SPU request to ddr3
                   end if;
                   
                   --voiceArray(index) <= voice;
@@ -1774,6 +1878,8 @@ begin
                   RamVoiceRecord_dataA( 73 downto  68) <= std_logic_vector(voice.adpcmDecodePtr);
                   RamVoiceRecord_dataA( 76 downto  74) <= std_logic_vector(voice.adsrphase);
                   RamVoiceRecord_dataA(100 downto  77) <= std_logic_vector(voice.adsrTicks);
+                  RamVoiceRecord_dataA(101)            <= voice.firstBlock;
+                  RamVoiceRecord_dataA(102)            <= voice.ignoreLoopWB;
 
                -- DATA TRANSFER   
                when RAM_READ =>
@@ -2220,7 +2326,7 @@ begin
             end if;
          end if;
          
-         if (dma_write = '1') then
+         if (dma_write = '1' and ce = '1') then
             if (FifoIn_Full = '0') then
                FifoIn_Wr  <= '1';
                FifoIn_Din <= dma_writedata;
@@ -2387,21 +2493,17 @@ begin
    process (clk1x)
    begin
       if (rising_edge(clk1x)) then
-      
-         if (SS_reset = '1') then
-         
-            for i in 0 to 63 loop
-               ss_in(i) <= (others => '0');
-            end loop;
-            ss_in(5) <= x"00000001"; -- noiseLevel
-            
-         elsif (SS_wren = '1' and SS_Adr < 64) then
-            ss_in(to_integer(SS_Adr)) <= SS_DataWrite;
-         end if;
          
          SS_idle <= '0';
-         if (FifoIn_Empty = '1' and FifoOut_Empty = '1' and state = IDLE and sampleticks < 760 and sampleticks > 0 and stashedSamples = 0) then
-            SS_idle <= '1';
+         if ((FifoIn_Empty = '1' or ss_timeout(23) = '1') and (FifoOut_Empty = '1' or ss_timeout(23) = '1') and state = IDLE and sampleticks < 760 and sampleticks > 0 and stashedSamples = 0) then
+            SS_idle    <= '1';
+            if (FifoIn_Empty = '1' and FifoOut_Empty = '1') then
+               ss_timeout <= (others => '0');
+            end if;
+         end if;
+         
+         if (ss_timeout(23) = '0') then
+            ss_timeout <= ss_timeout + 1;
          end if;
          
          if (SS_rden = '1') then
@@ -2418,7 +2520,7 @@ begin
                    when "00" => SS_DataRead <= x"0000" & RamVoiceRecord_dataB(1)(15 downto 0);     -- voice.currentAddr
                    when "01" => SS_DataRead <= RamVoiceRecord_dataB(1)(47 downto 16);              -- voice.adpcmLast0 + voice.adpcmLast1
                    when "10" => SS_DataRead <= "000" & RamVoiceRecord_dataB(1)(76 downto 48);      -- voice.adpcmSamplePos + voice.adpcmDecodePtr + voice.adsrphase 
-                   when "11" => SS_DataRead <= x"00" & RamVoiceRecord_dataB(1)(100 downto 77);     -- voice.adsrTicks
+                   when "11" => SS_DataRead <= "000000" & RamVoiceRecord_dataB(1)(102 downto 77);  -- voice.adsrTicks + voice.firstBlock + voice.ignoreLoopWB
                    when others =>
                 end case;
             else

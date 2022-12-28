@@ -14,7 +14,9 @@ entity gpu_poly is
       reset                : in  std_logic;
       
       REPRODUCIBLEGPUTIMING: in  std_logic;
-      textureFilter        : in  std_logic;
+      textureFilter        : in  std_logic_vector(1 downto 0);
+      textureFilterStrength: in  std_logic_vector(1 downto 0);
+      textureFilter2DOff   : in  std_logic;
       
       error                : out std_logic;
       
@@ -39,6 +41,7 @@ entity gpu_poly is
       div5                 : inout div_type; 
       div6                 : inout div_type; 
       
+      fifoOut_idle         : in  std_logic;
       pipeline_busy        : in  std_logic;
       pipeline_stall       : in  std_logic;
       pipeline_new         : out std_logic := '0';
@@ -52,7 +55,12 @@ entity gpu_poly is
       pipeline_cg          : out unsigned(7 downto 0) := (others => '0');
       pipeline_cb          : out unsigned(7 downto 0) := (others => '0');
       pipeline_u           : out unsigned(7 downto 0) := (others => '0');
-      pipeline_v           : out unsigned(7 downto 0) := (others => '0');
+      pipeline_v           : out unsigned(7 downto 0) := (others => '0'); 
+      pipeline_filter      : out std_logic := '0';   
+      pipeline_u11         : out unsigned(7 downto 0) := (others => '0');
+      pipeline_v11         : out unsigned(7 downto 0) := (others => '0');      
+      pipeline_uAcc        : out unsigned(7 downto 0) := (others => '0');
+      pipeline_vAcc        : out unsigned(7 downto 0) := (others => '0');
       
       proc_idle            : in  std_logic;
       fifo_Valid           : in  std_logic;
@@ -100,6 +108,7 @@ architecture arch of gpu_poly is
       PREPAREHALF,
       PREPAREDECMODE,
       PREPARELINE,
+      REQUESTFIRST,
       REQUESTLINE,
       READWAIT,
       PROCPIXELS,
@@ -231,6 +240,7 @@ architecture arch of gpu_poly is
 
    signal firstPixel          : std_logic;   
    
+   signal filterStrength      : integer range 0 to 4;
    signal filter_on           : std_logic;
    signal filter_maxU         : unsigned(7 downto 0);
    signal filter_maxV         : unsigned(7 downto 0);
@@ -359,10 +369,19 @@ begin
       variable calc4    : signed(44 downto 0);
       variable stop     : std_logic;
       variable skip     : std_logic; 
-      variable uFilter  : unsigned(20 downto 0);
-      variable vFilter  : unsigned(20 downto 0);
+      variable uFilter  : unsigned(10 downto 0);
+      variable vFilter  : unsigned(10 downto 0);
    begin
       if rising_edge(clk2x) then
+         
+         filterStrength <= to_integer(unsigned(textureFilterStrength)) + 1;
+         
+         -- must be done here, so it also is effected when ce is off = paused
+         if (state = READWAIT) then
+            if (requestVRAMDone = '1') then
+               state <= PROCPIXELS;
+            end if;
+         end if;
          
          if (reset = '1') then
          
@@ -390,7 +409,12 @@ begin
             pipeline_cg          <= (others => '0');
             pipeline_cb          <= (others => '0');
             pipeline_u           <= (others => '0');
-            pipeline_v           <= (others => '0');
+            pipeline_v           <= (others => '0');  
+            pipeline_filter      <= '0';       
+            pipeline_u11         <= (others => '0');
+            pipeline_v11         <= (others => '0');            
+            pipeline_uAcc        <= (others => '0');
+            pipeline_vAcc        <= (others => '0');
             
             div1.start           <= '0';
             div2.start           <= '0';
@@ -501,8 +525,6 @@ begin
                   if (fifo_Valid = '1') then
                      rec_vertices(rec_index).u <= unsigned(fifo_data( 7 downto  0));
                      rec_vertices(rec_index).v <= unsigned(fifo_data(15 downto  8));
-                     if (unsigned(fifo_data( 7 downto  0)) > filter_maxU) then filter_maxU <= unsigned(fifo_data( 7 downto  0)); end if;
-                     if (unsigned(fifo_data(15 downto  8)) > filter_maxV) then filter_maxV <= unsigned(fifo_data(15 downto  8)); end if;
                      if (rec_index = 0) then
                         rec_textPalX  <= unsigned(fifo_data(21 downto 16)) & "0000";
                         rec_textPalY  <= unsigned(fifo_data(30 downto 22));
@@ -579,7 +601,22 @@ begin
                      vt(1) <= vt(1);
                      vt(2) <= vt(0);
                   end if; -- 0 1 2 requires no resorting
-               
+                  
+                  if (vt(0).u >= vt(1).u and vt(0).u >= vt(2).u) then 
+                     filter_maxU <= vt(0).u; 
+                  elsif (vt(1).u >= vt(0).u and vt(1).u >= vt(2).u) then 
+                     filter_maxU <= vt(1).u; 
+                  else
+                     filter_maxU <= vt(2).u; 
+                  end if;
+                  
+                  if (vt(0).v >= vt(1).v and vt(0).v >= vt(2).v) then 
+                     filter_maxV <= vt(0).v; 
+                  elsif (vt(1).v >= vt(0).v and vt(1).v >= vt(2).v) then 
+                     filter_maxV <= vt(1).v; 
+                  else
+                     filter_maxV <= vt(2).v; 
+                  end if;
                
                when CALCBOUNDARY1 =>
                   state <= CALCBOUNDARY2;
@@ -886,8 +923,18 @@ begin
                   end if;
                   
                   filter_on <= '0';
-                  if (textureFilter = '1' and rec_dithering = '1' and drawmode_dithering = '1' and (dxV /= 0 or dyU /= 0)) then
+                  if (textureFilter = "01") then -- always on
                      filter_on <= '1';
+                  elsif (textureFilter = "10" and rec_dithering = '1' and drawmode_dithering = '1') then -- dithered
+                     filter_on <= '1';
+                  elsif (textureFilter = "11" and rec_dithering = '1' and drawmode_dithering = '1' and rec_shading = '1') then -- dith + shaded
+                     filter_on <= '1';
+                  end if;
+                  
+                  if (textureFilter2DOff = '1' and dyU = 0 and dxV = 0) then
+                     if (dxU = 4096 or dyV = 4096) then
+                        filter_on <= '0';
+                     end if;
                   end if;
                   
                when PREPAREDECMODE =>
@@ -913,7 +960,11 @@ begin
                   end if;
                
                   if (rec_transparency = '1' or DrawPixelsMask = '1') then
-                     state <= REQUESTLINE;
+                     if (firstPixel = '1') then
+                        state <= REQUESTFIRST;
+                     else
+                        state <= REQUESTLINE;
+                     end if;
                   else
                      state <= PROCPIXELS;
                   end if;
@@ -1018,15 +1069,17 @@ begin
                      end if;
                   end if;
                        
+                when REQUESTFIRST =>
+                  if (pipeline_busy = '0' and fifoOut_idle = '1') then
+                     state <= REQUESTLINE;
+                  end if;
+                       
                when REQUESTLINE =>
                   if (pipeline_stall = '0' and requestVRAMIdle = '1') then
                      state  <= READWAIT;
                   end if;
                   
-               when READWAIT =>
-                  if (requestVRAMDone = '1') then
-                     state <= PROCPIXELS;
-                  end if;
+               when READWAIT => null; -- handled outside due to ce
                
                when PROCPIXELS =>
                   if (pipeline_stall = '0' and (firstPixel = '0' or pipeline_busy = '0')) then
@@ -1072,16 +1125,18 @@ begin
                         pipeline_cb          <= work_B(19 downto 12);
                         pipeline_u           <= work_U(19 downto 12);
                         pipeline_v           <= work_V(19 downto 12);
+                        pipeline_u11         <= work_U(19 downto 12);
+                        pipeline_v11         <= work_V(19 downto 12);
+                        pipeline_uAcc        <= work_U(11 downto 4);
+                        pipeline_vAcc        <= work_V(11 downto 4);
                         
                         if (filter_on = '1') then
-                           if    (xPos(0) = '0' and yPos(0) = '0') then uFilter := resize(work_U(19 downto 0), 21) + 16#400#; vFilter := resize(work_V(19 downto 0), 21) + 16#000#;
-                           elsif (xPos(0) = '1' and yPos(0) = '0') then uFilter := resize(work_U(19 downto 0), 21) + 16#800#; vFilter := resize(work_V(19 downto 0), 21) + 16#C00#;
-                           elsif (xPos(0) = '0' and yPos(0) = '1') then uFilter := resize(work_U(19 downto 0), 21) + 16#C00#; vFilter := resize(work_V(19 downto 0), 21) + 16#800#;
-                           else                                         uFilter := resize(work_U(19 downto 0), 21) + 16#000#; vFilter := resize(work_V(19 downto 0), 21) + 16#400#;
-                           end if;
+                           pipeline_filter      <= '1';
                            
-                           if (uFilter(20 downto 12) <= ('0' & filter_maxU)) then pipeline_u <= uFilter(19 downto 12); end if;
-                           if (vFilter(20 downto 12) <= ('0' & filter_maxV)) then pipeline_v <= vFilter(19 downto 12); end if;
+                           uFilter := resize(work_U(19 downto 10), 11) + filterStrength; 
+                           vFilter := resize(work_V(19 downto 10), 11) + filterStrength;
+                           if (uFilter(10 downto 2) <= ('0' & filter_maxU)) then pipeline_u11 <= uFilter(9 downto 2); end if;
+                           if (vFilter(10 downto 2) <= ('0' & filter_maxV)) then pipeline_v11 <= vFilter(9 downto 2); end if;
                         end if;
                         
                      end if;

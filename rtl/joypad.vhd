@@ -19,8 +19,15 @@ entity joypad is
       DSAltSwitchMode      : in  std_logic;
       joypad1              : in  joypad_t;
       joypad2              : in  joypad_t;
+      joypad3              : in  joypad_t;
+      joypad4              : in  joypad_t;
+      multitap             : in  std_logic;
+      multitapDigital      : in  std_logic;
+      multitapAnalog       : in  std_logic;
       joypad1_rumble       : out std_logic_vector(15 downto 0) := (others => '0');
       joypad2_rumble       : out std_logic_vector(15 downto 0) := (others => '0');
+      joypad3_rumble       : out std_logic_vector(15 downto 0) := (others => '0');
+      joypad4_rumble       : out std_logic_vector(15 downto 0) := (others => '0');
       padMode              : out std_logic_vector(1 downto 0);
 
       memcard1_available   : in  std_logic;
@@ -39,6 +46,7 @@ entity joypad is
       Gun2Y_scanlines      : in  unsigned(8 downto 0);
       Gun1AimOffscreen     : in  std_logic;
       Gun2AimOffscreen     : in  std_logic;
+      JustifierIrqEnable   : out std_logic_vector(1 downto 0);
 
       snacPort1_in         : in  std_logic;
       snacPort2_in         : in  std_logic;		
@@ -119,11 +127,6 @@ architecture arch of joypad is
    signal snacPort2           : std_logic := '0';	
    signal baudCntSnac         : unsigned(20 downto 0) := (others => '0');
    signal bitCntSnac          : unsigned(4 downto 0)  := (others => '0');
-   signal initialDelaySnac    : unsigned(10 downto 0) := (others => '0');
-   signal delayEnableSnac     : std_logic;
-   signal oldselectedPort1Snac: std_logic := '0';
-   signal oldselectedPort2Snac: std_logic := '0';
-   signal beginTransferdelayedSnac : std_logic := '0';
    signal actionNextCombine   : std_logic := '0';	
       
    -- devices  
@@ -152,9 +155,6 @@ architecture arch of joypad is
    signal receiveValidMem1    : std_logic;
    signal receiveValidMem2    : std_logic;
 
-   signal joypad_selected     : joypad_t;
-   signal rumble_selected     : std_logic_vector(15 downto 0);
-   signal rumble_previous     : std_logic_vector(15 downto 0);
    signal GunX                : unsigned(7 downto 0);
    signal GunY_scanlines      : unsigned(8 downto 0);
    signal GunAimOffscreen     : std_logic;
@@ -220,9 +220,6 @@ begin
             beginTransfer   <= '0';
             actionNext      <= '0';
             
-            joypad1_rumble  <= (others => '0');
-            joypad2_rumble  <= (others => '0');
-
          elsif (ce = '1') then
          
             bus_dataRead <= (others => '0');
@@ -245,6 +242,8 @@ begin
                      
                   when x"4" =>
                      bus_dataRead <= JOY_STAT;
+                     -- hack for emulated pad/memcards -> usually should have about 100 cycles of ack time instead of resetting it here.
+                     -- Currently there is no reason to emulate that, as it only costs ressources and emulated pads/memcards are working fine.
                      JOY_STAT_ACK <= '0';
                      
                   when x"8" =>
@@ -329,9 +328,6 @@ begin
                transmitFilled <= '0';
                transmitting   <= '1';
                baudCnt        <= to_unsigned(to_integer(unsigned(JOY_BAUD)) * 8, 21);
-               if (unsigned(JOY_BAUD) = 0) then
-                  baudCnt     <= to_unsigned(8, 21);
-               end if;
             elsif (actionNextCombine = '1') then
                if (transmitting = '1') then
                   JOY_CTRL(2)    <= '1';
@@ -346,11 +342,10 @@ begin
                      waitAck <= '1';                            
                      -- ack delay and initial low phase of ~100 clock cycles(hardware bug) not implemented
                      -- current logic assumes delayless long ack duration
-                     -- measurements and values from @JaCzekanski, psx-sps and duckstation
                      if (ackMem1 = '1') then
-                        baudCnt <= to_unsigned(500, 21); -- todo: should be ~5us + duration 9.98us => 500 clock cycles?
+                        baudCnt <= to_unsigned(500, 21); -- todo: should be ~5us + duration 9.98us => 500 clock cycles? -- measurements and values from @JaCzekanski, psx-sps and duckstation
                      else
-                        baudCnt <= to_unsigned(752, 21); -- ACK delay is between 6.8us-13.7us + duration 9.98us => 566 - 833 clock cycles
+                        baudCnt <= to_unsigned(550, 21); -- measurement from joypad.exe test - average case timing (using best case only will let RE DC fail pad detect occasionally)
                      end if;
                   end if;
                elsif (waitAck = '1') then
@@ -366,14 +361,6 @@ begin
             end if;
             JOY_CTRL_13_1 <= JOY_CTRL(13);
             
-            if (receiveValidPad = '1') then
-               if (selectedPort1 = '1') then
-                  joypad1_rumble <= rumble_selected;
-               else
-                  joypad2_rumble <= rumble_selected;
-               end if;
-            end if;
-          
          end if;
       end if;
    end process;
@@ -389,7 +376,6 @@ begin
                  '1' when (JOY_CTRL(13) = '1' and JOY_CTRL(1 downto 0) = "11" and snacPort2 = '0') else 
                  '0';
 
-   joypad_selected <= joypad2 when selectedPort2 else joypad1;
    GunX            <= Gun2X when selectedPort2 else Gun1X;
    GunY_scanlines  <= Gun2Y_scanlines when selectedPort2 else Gun1Y_scanlines;
    GunAimOffscreen <= Gun2AimOffscreen when selectedPort2 else Gun1AimOffscreen;
@@ -403,9 +389,18 @@ begin
       reset                => reset,    
        
       DSAltSwitchMode      => DSAltSwitchMode,
-      joypad               => joypad_selected,
-      rumble               => rumble_selected,
+      joypad1              => joypad1,
+      joypad2              => joypad2,
+      joypad3              => joypad3,
+      joypad4              => joypad4,
+      joypad1_rumble       => joypad1_rumble,
+      joypad2_rumble       => joypad2_rumble,
+      joypad3_rumble       => joypad3_rumble,
+      joypad4_rumble       => joypad4_rumble,
       padMode              => padMode,
+      isMultitap           => multitap,
+      multitapDigital      => multitapDigital,
+      multitapAnalog       => multitapAnalog,
       portNr               => portNr,
       isPal                => isPal,
 
@@ -430,6 +425,7 @@ begin
       GunX                 => GunX,
       GunY_scanlines       => GunY_scanlines,
       GunAimOffscreen      => GunAimOffscreen,
+      JustifierIrqEnable   => JustifierIrqEnable,
       
       ss_in                => ss_in(7),
       ss_out               => ss_out(7)
@@ -516,66 +512,39 @@ begin
          if (reset = '1') then		  
             baudCntSnac  <= to_unsigned(0, 21);
             bitCntSnac   <= to_unsigned(0, 5);	
-            initialDelaySnac <= to_unsigned(0, 11);
-            delayEnableSnac <= '0';
-            oldselectedPort1Snac <= '0';
-            oldselectedPort2Snac <= '0';
-            beginTransferdelayedSnac <= '0';
             clk9Snac <= '0';	
 
          elsif (ce = '1') then
 
-            if (baudCntSnac > 0) then
-              baudCntSnac <= baudCntSnac - 1;
-            else
-               if (bitCntSnac > 0) then
-                  bitCntSnac   <= bitCntSnac - 1;
-                  clk9Snac     <= not clk9Snac;
-                  baudCntSnac  <= to_unsigned((to_integer(unsigned(JOY_BAUD)) / 2) - 1, 21);
+            if (SelectedPort1Snac or SelectedPort2Snac) then
+               if (baudCntSnac > 0) then
+                  baudCntSnac <= baudCntSnac - 1;
                else
-                  clk9Snac <= '1';
-               end if;						
-            end if;
+                  if (bitCntSnac > 0) then
+                     bitCntSnac   <= bitCntSnac - 1;
+                     clk9Snac     <= not clk9Snac;
+                     baudCntSnac  <= to_unsigned((to_integer(unsigned(JOY_BAUD)) / 2) - 1, 21);
+                  else
+                     clk9Snac <= '1';
+                  end if;						
+               end if;
 				
-            -- needs to be a delay between select signal and first clk. digital pad may work but dualshock probably won't without it, depending on software
-            if (beginTransfer = '1' and delayEnableSnac = '1') then
-              initialDelaySnac <= to_unsigned(1226, 11);	-- tuned to digital pad in bios(1226)	
-            elsif (beginTransfer = '1' and delayEnableSnac = '0') then
-              initialDelaySnac <= to_unsigned(1, 11);
-            end if;				
-				
-            if (initialDelaySnac > 0) then
-              initialDelaySnac <= initialDelaySnac - 1;
-            end if;
-            if (initialDelaySnac = 1) then
-              beginTransferdelayedSnac <= '1';
-              delayEnableSnac <= '0';
-            else
-              beginTransferdelayedSnac <= '0';
-            end if;				
-				
-            if ((selectedPort1Snac = '1' and oldselectedPort1Snac = '0') or (selectedPort2Snac = '1' and oldselectedPort2Snac = '0')) then
-              delayEnableSnac <= '1'; --a signal to enable the delay. this should happen once when either are selected 
-            end if;
-		
-            if (beginTransferdelayedSnac = '1') then
-              baudCntSnac    <= to_unsigned((to_integer(unsigned(JOY_BAUD)) / 2) - 1, 21);--should do joy_baud * Baudrate Reload value
-              clk9Snac       <= '0';
-              bitCntSnac     <= to_unsigned(17, 5);
-              if (unsigned(JOY_BAUD) = 0) then
-                 baudCntSnac  <= to_unsigned(8, 21);			
-              end if;
+               if (beginTransferSnac = '1') then
+                  baudCntSnac    <= to_unsigned((to_integer(unsigned(JOY_BAUD)) / 2) - 1, 21);--should do joy_baud * Baudrate Reload value
+                  clk9Snac       <= '0';
+                  bitCntSnac     <= to_unsigned(17, 5);
+                  if (unsigned(JOY_BAUD) = 0) then
+                     baudCntSnac  <= to_unsigned(8, 21);			
+                  end if;
+               end if;	
             end if;	
-		
-            oldselectedPort1Snac <= selectedPort1Snac;
-            oldselectedPort2Snac <= selectedPort2Snac;	
 
          end if;
       end if;		
    end process;
 	
-   SelectedPort1Snac <= '1' when (JOY_CTRL(13) = '0' and JOY_CTRL(1 downto 0) = "11" and snacPort1 = '1') else '0';
-   SelectedPort2Snac <= '1' when (JOY_CTRL(13) = '1' and JOY_CTRL(1 downto 0) = "11" and snacPort2 = '1') else '0';
+   SelectedPort1Snac <= '1' when (JOY_CTRL(13) = '0' and JOY_CTRL(1) = '1' and snacPort1 = '1') else '0';
+   SelectedPort2Snac <= '1' when (JOY_CTRL(13) = '1' and JOY_CTRL(1) = '1' and snacPort2 = '1') else '0';
    beginTransferSnac <= begintransfer;
    transmitValueSnac <= transmitValue;
    
@@ -598,7 +567,7 @@ begin
          end if;
          
          SS_idle <= '0';
-         if (transmitting = '0' and waitAck = '0' and beginTransfer = '0' and actionNextCombine = '0' and isActivePad = '0' and initialDelaySnac = 0 and beginTransferdelayedSnac = '0') then
+         if (transmitting = '0' and waitAck = '0' and beginTransfer = '0' and actionNextCombine = '0' and isActivePad = '0' and beginTransferSnac = '0') then
             SS_idle <= '1';
          end if;
          
@@ -616,7 +585,7 @@ begin
    
    begin
       process
-         constant WRITETIME            : std_logic := '1';
+         constant WRITETIME            : std_logic := '0';
          
          file outfile                  : text;
          variable f_status             : FILE_OPEN_STATUS;
@@ -674,8 +643,9 @@ begin
                write(line_out, string'("READ: "));
                if (WRITETIME = '1') then
                   write(line_out, to_hstring(clkCounter));
+                  write(line_out, string'(" ")); 
                end if;
-               write(line_out, string'(" 0")); 
+               write(line_out, string'("0")); 
                write(line_out, to_hstring(bus_addr_1));
                write(line_out, string'(" ")); 
                write(line_out, to_hstring(bus_dataRead(15 downto 0)));
@@ -689,19 +659,34 @@ begin
                write(line_out, string'("BEGINTRANSFER: "));
                if (WRITETIME = '1') then
                   write(line_out, to_hstring(clkCounter - 1));
+                  write(line_out, string'(" ")); 
                end if;
-               write(line_out, string'(" 00 00")); 
+               write(line_out, string'("00 00")); 
                write(line_out, to_hstring(transmitBuffer));
                writeline(outfile, line_out);
                newoutputCnt := newoutputCnt + 1;
-            end if;             
+            end if;    
+
+            if (transmit_1 = '1' and selectedPort1 = '1') then
+               write(line_out, string'("TRANSFER: "));
+               if (WRITETIME = '1') then
+                  write(line_out, to_hstring(clkCounter + 1));
+                  write(line_out, string'(" ")); 
+               end if;
+               write(line_out, to_hstring(transmitBuffer));
+               write(line_out, string'(" 00")); 
+               write(line_out, to_hstring(receiveBuffer));
+               writeline(outfile, line_out);
+               newoutputCnt := newoutputCnt + 1;
+            end if;     
             
             if (transmit_1 = '1') then
                write(line_out, string'("TRANSMIT: "));
                if (WRITETIME = '1') then
                   write(line_out, to_hstring(clkCounter + 1));
+                  write(line_out, string'(" ")); 
                end if;
-               write(line_out, string'(" 00 00")); 
+               write(line_out, string'("00 00")); 
                write(line_out, to_hstring(receiveBuffer));
                writeline(outfile, line_out);
                newoutputCnt := newoutputCnt + 1;
@@ -712,8 +697,9 @@ begin
                write(line_out, string'("IRQ: "));
                if (WRITETIME = '1') then
                   write(line_out, to_hstring(clkCounter));
+                  write(line_out, string'(" ")); 
                end if;
-               write(line_out, string'(" 00 ")); 
+               write(line_out, string'("00 ")); 
                write(line_out, to_hstring(JOY_STAT(15 downto 0)));
                writeline(outfile, line_out);
                newoutputCnt := newoutputCnt + 1;

@@ -26,6 +26,7 @@ entity gpu_rect is
       drawingAreaTop       : in  unsigned(8 downto 0);
       drawingAreaBottom    : in  unsigned(8 downto 0);
       
+      fifoOut_idle         : in  std_logic;
       pipeline_busy        : in  std_logic;
       pipeline_stall       : in  std_logic;
       pipeline_new         : out std_logic := '0';
@@ -72,6 +73,7 @@ architecture arch of gpu_rect is
       REQUESTTEXTURE,
       REQUESTSIZE,
       CHECKPOS,
+      REQUESTFIRST,
       REQUESTLINE,
       READWAIT,
       PROCPIXELS,
@@ -129,6 +131,13 @@ begin
       variable yAdd   : integer range 1 to 2;
    begin
       if rising_edge(clk2x) then
+      
+         -- must be done here, so it also is effected when ce is off = paused
+         if (state = READWAIT) then
+            if (requestVRAMDone = '1') then
+               state <= PROCPIXELS;
+            end if;
+         end if;
       
          if (reset = '1') then
          
@@ -285,9 +294,14 @@ begin
                         done  <= '1';
                      end if;
                   elsif (rec_transparency = '1' or DrawPixelsMask = '1') then
-                     state  <= REQUESTLINE;
+                     state  <= REQUESTFIRST;
                   else
                      state  <= PROCPIXELS;
+                  end if;
+               
+               when REQUESTFIRST =>
+                  if (pipeline_busy = '0' and fifoOut_idle = '1') then
+                     state <= REQUESTLINE;
                   end if;
                        
                when REQUESTLINE =>
@@ -295,10 +309,7 @@ begin
                      state  <= READWAIT;
                   end if;
                   
-               when READWAIT =>
-                  if (requestVRAMDone = '1') then
-                     state <= PROCPIXELS;
-                  end if;
+               when READWAIT => null; -- handled outside due to ce
                
                when PROCPIXELS =>
                   if (pipeline_stall = '0' and (firstPixel = '0' or pipeline_busy = '0')) then

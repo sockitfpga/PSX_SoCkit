@@ -34,6 +34,7 @@ entity gpu_line is
       div5                 : inout div_type; 
       div6                 : inout div_type; 
       
+      fifoOut_idle         : in  std_logic;
       pipeline_busy        : in  std_logic;
       pipeline_stall       : in  std_logic;
       pipeline_new         : out std_logic := '0';
@@ -112,6 +113,7 @@ architecture arch of gpu_line is
       PROCCALC1,
       PROCCALC2,
       PROCCALC3,
+      PROCREQUESTFIRST,
       PROCREADLINE,
       PROCREADWAIT,
       PROCPIXELS
@@ -328,6 +330,13 @@ begin
    begin
       if rising_edge(clk2x) then
          
+         -- must be done here, so it also is effected when ce is off = paused
+         if (procstate = PROCREADWAIT) then
+            if (requestVRAMDone = '1') then
+               procstate <= PROCPIXELS;
+            end if;
+         end if;
+         
          if (reset = '1') then
          
             procstate <= PROCIDLE;
@@ -397,7 +406,7 @@ begin
                   else
                      if (dy(9 downto 0) = 0) then 
                         if (proc_transparency = '1' or DrawPixelsMask = '1') then
-                           procstate <= PROCREADLINE;
+                           procstate <= PROCREQUESTFIRST;
                         else
                            procstate <= PROCPIXELS;
                         end if;
@@ -406,9 +415,13 @@ begin
                      singlePixelLines  <= '1';
                      yPerLine          <= to_unsigned(1, 11);
                   end if;
-                  if (dx >= 16#400# or dy >= 16#200#) then
-                     procstate <= PROCIDLE;
-                  end if;
+                  
+                  if (dx >= 16#400# or dy >= 16#200#)                                                            then procstate <= PROCIDLE; end if;
+                  if (proc_pos1x < to_integer(drawingAreaLeft)   and proc_pos2x < to_integer(drawingAreaLeft))   then procstate <= PROCIDLE; end if;
+                  if (proc_pos1x > to_integer(drawingAreaRight)  and proc_pos2x > to_integer(drawingAreaRight))  then procstate <= PROCIDLE; end if;
+                  if (proc_pos1y < to_integer(drawingAreaTop)    and proc_pos2y < to_integer(drawingAreaTop))    then procstate <= PROCIDLE; end if;
+                  if (proc_pos1y > to_integer(drawingAreaBottom) and proc_pos2y > to_integer(drawingAreaBottom)) then procstate <= PROCIDLE; end if;
+                  
                   if (proc_pos1x >= proc_pos2x) then
                      proc_pos1x  <= proc_pos2x; 
                      proc_pos1y  <= proc_pos2y; 
@@ -449,7 +462,8 @@ begin
                   -- calculate pixels per line for transparency readback
                   div6.start     <= '1';
                   div6.dividend  <= "000" & x"00000000" & signed(points);
-                  div6.divisor   <= "0" & x"000" & (abs(proc_pos2y - proc_pos1y));
+                  if (dy = 0) then  div6.divisor   <= to_signed(1, div6.divisor'length);
+                  else              div6.divisor   <= "0" & x"000" & (abs(proc_pos2y - proc_pos1y)); end if;
                   
                when PROCCALC3 =>
                   pixelCnt  <= (others => '0');
@@ -464,7 +478,7 @@ begin
                   workb <= '0' & signed(proc_color1(23 downto 16)) & x"800";
                   if (div1.done = '1') then
                      if (proc_transparency = '1' or DrawPixelsMask = '1') then
-                        procstate <= PROCREADLINE;
+                        procstate <= PROCREQUESTFIRST;
                      else
                         procstate <= PROCPIXELS;
                      end if;
@@ -478,12 +492,17 @@ begin
                      end if;
                   end if;
                   
+               when PROCREQUESTFIRST =>
+                  if (pipeline_busy = '0' and fifoOut_idle = '1') then
+                     procstate <= PROCREADLINE;
+                  end if;
+                  
                when PROCREADLINE =>
                   if (pipeline_stall = '0' and requestVRAMIdle = '1') then
                      procstate         <= PROCREADWAIT;
                   end if;
                   
-               when PROCREADWAIT =>
+               when PROCREADWAIT => null; -- handled outside due to ce
                   if (requestVRAMDone = '1') then
                      procstate <= PROCPIXELS;
                   end if;

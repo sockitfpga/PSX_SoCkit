@@ -74,17 +74,36 @@ architecture arch of etb is
       
    --sdram access 
    signal ram_dataWrite       : std_logic_vector(31 downto 0);
-   signal ram_dataRead        : std_logic_vector(127 downto 0);
    signal ram_dataRead32      : std_logic_vector(31 downto 0);
-   signal ram_Adr             : std_logic_vector(22 downto 0);
+   signal ram_Adr             : std_logic_vector(24 downto 0);
+   signal ram_cntDMA          : std_logic_vector(1 downto 0);
    signal ram_be              : std_logic_vector(3 downto 0);
    signal ram_rnw             : std_logic;
    signal ram_ena             : std_logic;
-   signal ram_128             : std_logic;
+   signal ram_dma             : std_logic;
+   signal ram_iscache         : std_logic;
    signal ram_done            : std_logic;   
-   signal ram_reqprocessed    : std_logic;   
    signal ram_refresh         : std_logic;   
    signal ram_idle            : std_logic;   
+   
+   signal cache_wr            : std_logic_vector(3 downto 0);
+   signal cache_data          : std_logic_vector(31 downto 0);
+   signal cache_addr          : std_logic_vector(7 downto 0);
+   
+   signal dma_wr              : std_logic;
+   signal dma_reqprocessed    : std_logic;
+   signal dma_data            : std_logic_vector(31 downto 0);
+   
+   signal ram_dmafifo_adr     : std_logic_vector(22 downto 0);
+   signal ram_dmafifo_data    : std_logic_vector(31 downto 0);
+   signal ram_dmafifo_empty   : std_logic;
+   signal ram_dmafifo_read    : std_logic;
+   
+   signal exe_initial_pc      : unsigned(31 downto 0);
+   signal exe_initial_gp      : unsigned(31 downto 0);
+   signal exe_load_address    : unsigned(31 downto 0);
+   signal exe_file_size       : unsigned(31 downto 0);
+   signal exe_stackpointer    : unsigned(31 downto 0);
    
    -- ddrram
    signal DDRAM_CLK           : std_logic;
@@ -108,22 +127,22 @@ architecture arch of etb is
    signal video_b             : std_logic_vector(7 downto 0);
    
    -- keys
-   signal KeyTriangle         : std_logic_vector(1 downto 0) := (others => '0'); 
-   signal KeyCircle           : std_logic_vector(1 downto 0) := (others => '0'); 
-   signal KeyCross            : std_logic_vector(1 downto 0) := (others => '0'); 
-   signal KeySquare           : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeySelect           : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyStart            : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyRight            : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyLeft             : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyUp               : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyDown             : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyR1               : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyR2               : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyR3               : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyL1               : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyL2               : std_logic_vector(1 downto 0) := (others => '0');
-   signal KeyL3               : std_logic_vector(1 downto 0) := (others => '0');
+   signal KeyTriangle         : std_logic_vector(3 downto 0) := (others => '0'); 
+   signal KeyCircle           : std_logic_vector(3 downto 0) := (others => '0'); 
+   signal KeyCross            : std_logic_vector(3 downto 0) := (others => '0'); 
+   signal KeySquare           : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeySelect           : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyStart            : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyRight            : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyLeft             : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyUp               : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyDown             : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyR1               : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyR2               : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyR3               : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyL1               : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyL2               : std_logic_vector(3 downto 0) := (others => '0');
+   signal KeyL3               : std_logic_vector(3 downto 0) := (others => '0');
    signal Analog1XP1          : signed(7 downto 0) := (others => '0');
    signal Analog1YP1          : signed(7 downto 0) := (others => '0');
    signal Analog2XP1          : signed(7 downto 0) := (others => '0');
@@ -172,10 +191,13 @@ architecture arch of etb is
    signal spuram_done         : std_logic;
    
    -- memcard
+   type t_memdata is array(0 to 32767) of integer;
+   signal memcardLoaded       : std_logic := '0';
    signal memcard1_load       : std_logic := '0';
    signal memcard2_load       : std_logic := '0';
+   signal memcard1_mounted    : std_logic := '0';
+   signal memcard2_mounted    : std_logic := '0';
    signal memcard_save        : std_logic := '0';
-   signal memcard1_available  : std_logic := '0';
    signal memcard1_rd         : std_logic;
    signal memcard1_wr         : std_logic;
    signal memcard1_lba        : std_logic_vector(6 downto 0);
@@ -183,8 +205,7 @@ architecture arch of etb is
    signal memcard1_write      : std_logic := '0';
    signal memcard1_addr       : std_logic_vector(8 downto 0) := (others => '0');
    signal memcard1_dataIn     : std_logic_vector(15 downto 0);
-   signal memcard1_dataOut    : std_logic_vector(15 downto 0);
-   signal memcard2_available  : std_logic := '0';               
+   signal memcard1_dataOut    : std_logic_vector(15 downto 0);              
    signal memcard2_rd         : std_logic := '0';
    signal memcard2_wr         : std_logic := '0';
    signal memcard2_lba        : std_logic_vector(6 downto 0);
@@ -204,10 +225,11 @@ begin
    
    reset  <= not psx_on(0);
    
-   -- NTSC 53.693175 mhz => 18624.340989ps
-   clkvid <= not clkvid after 9312 ps;
+   -- NTSC 53.693175 mhz => 30 ns * 33.8688 / 53.693175 / 2 = 9.4617612014 ns
+   clkvid <= not clkvid after 9462 ps;
       
-   -- PAL  53.203425 mhz => 18795.782414ps
+   -- PAL  53.203425 mhz => 30 ns * 33.8688 / 53.203425 / 2 = 9.5488589315 ns
+   --clkvid <= not clkvid after 9549 ps;
    
    -- sync  = 2x => 67.7376 mhz
    --clkvid <= not clkvid  after 7500 ps;
@@ -230,44 +252,80 @@ begin
    (
       clk1x                 => clk33,          
       clk2x                 => clk66, 
+      clk3x                 => clk100, 
       clkvid                => clkvid,
       reset                 => reset,
       -- commands 
       pause                 => pause,
+      hps_busy              => '0',
       loadExe               => psx_LoadExe(0),
+      exe_initial_pc        => exe_initial_pc,  
+      exe_initial_gp        => exe_initial_gp,  
+      exe_load_address      => exe_load_address,
+      exe_file_size         => exe_file_size,   
+      exe_stackpointer      => exe_stackpointer,
       fastboot              => '1',
-      FASTMEM               => '0',
-      DATACACHEON           => '0',
+      ram8mb                => '0',
+      TURBO_MEM             => '0',
+      TURBO_COMP            => '0',
+      TURBO_CACHE           => '0',
+      TURBO_CACHE50         => '0',
       REPRODUCIBLEGPUTIMING => '0',
-      REPRODUCIBLEDMATIMING => '0',
-      DMABLOCKATONCE        => '0',
       INSTANTSEEK           => '0',
+      FORCECDSPEED          => "000",
+      LIMITREADSPEED        => '0',
+      IGNORECDDMATIMING     => '0',
       ditherOff             => '0',
+      interlaced480pHack    => '0',
+      showGunCrosshairs     => '0',
       fpscountOn            => '0',
       cdslowOn              => '0',
+      testSeek              => '0',
+      pauseOnCDSlow         => '0',
       errorOn               => '0',
+      LBAOn                 => '0',
       PATCHSERIAL           => '0',
       noTexture             => '0',
+      textureFilter         => "00",
+      textureFilterStrength => "00",
+      textureFilter2DOff    => '0',
+      dither24              => '0',
+      render24              => '0',
       syncVideoOut          => '0',
       syncInterlace         => '0',
+      rotate180             => '0',
+      fixedVBlank           => '0',
+      vCrop                 => "00",
+      hCrop                 => '0',
       SPUon                 => '1',
+      SPUIRQTrigger         => '0',
       SPUSDRAM              => '1',
       REVERBOFF             => '0',
       REPRODUCIBLESPUDMA    => '0',
       WIDESCREEN            => "00",
       -- RAM/BIOS interface        
+      biosregion            => "00",
       ram_refresh           => ram_refresh,
       ram_dataWrite         => ram_dataWrite,
-      ram_dataRead          => ram_dataRead, 
       ram_dataRead32        => ram_dataRead32, 
       ram_Adr               => ram_Adr,      
+      ram_cntDMA            => ram_cntDMA,      
       ram_be                => ram_be,      
       ram_rnw               => ram_rnw,      
       ram_ena               => ram_ena,      
-      ram_128               => ram_128,      
+      ram_dma               => ram_dma,      
+      ram_cache             => ram_iscache,      
       ram_done              => ram_done,
-      ram_idle              => ram_idle,
-      ram_reqprocessed      => ram_reqprocessed,
+      ram_dmafifo_adr       => ram_dmafifo_adr, 
+      ram_dmafifo_data      => ram_dmafifo_data,
+      ram_dmafifo_empty     => ram_dmafifo_empty,
+      ram_dmafifo_read      => ram_dmafifo_read,  
+      cache_wr              => cache_wr,  
+      cache_data            => cache_data,
+      cache_addr            => cache_addr,
+      dma_wr                => dma_wr,  
+      dma_reqprocessed      => dma_reqprocessed,
+      dma_data              => dma_data,
       -- vram/ddr3 interface
       DDRAM_BUSY            => DDRAM_BUSY,      
       DDRAM_BURSTCNT        => DDRAM_BURSTCNT,  
@@ -280,10 +338,10 @@ begin
       DDRAM_WE              => DDRAM_WE,
       -- cd
       region                => "00",
+      region_out            => open,
       hasCD                 => '1',
       LIDopen               => '0',
       fastCD                => '0',
-      libcryptKey           => x"0000",
       trackinfo_data        => trackinfo_data,
       trackinfo_addr        => trackinfo_addr, 
       trackinfo_write       => trackinfo_write,
@@ -304,7 +362,8 @@ begin
       memcard1_load         => memcard1_load,      
       memcard2_load         => memcard2_load,      
       memcard_save          => memcard_save,      
-      memcard1_available    => memcard1_available,
+      memcard1_mounted      => memcard1_mounted,
+      memcard1_available    => '1',
       memcard1_rd           => memcard1_rd,       
       memcard1_wr           => memcard1_wr,       
       memcard1_lba          => memcard1_lba,      
@@ -313,7 +372,8 @@ begin
       memcard1_addr         => memcard1_addr,     
       memcard1_dataIn       => memcard1_dataIn,   
       memcard1_dataOut      => memcard1_dataOut,  
-      memcard2_available    => memcard2_available,
+      memcard2_mounted      => memcard2_mounted,
+      memcard2_available    => '0',
       memcard2_rd           => memcard2_rd,       
       memcard2_wr           => memcard2_wr,       
       memcard2_lba          => memcard2_lba,      
@@ -332,24 +392,30 @@ begin
       video_interlace       => video_interlace,
       video_r               => video_r, 
       video_g               => video_g,    
-      video_b               => video_b,   
+      video_b               => video_b, 
+      video_frameindex      => open,
       -- Keys - all active high
+      DSAltSwitchMode       => '0',
       PadPortEnable1        => '1',
+      PadPortDigital1       => '1',
       PadPortAnalog1        => '0',
       PadPortMouse1         => '0',
       PadPortGunCon1        => '0',
       PadPortneGcon1        => '0',
       PadPortWheel1         => '0',
       PadPortDS1            => '0',
-      PadPortDSA1           => '0',
-      PadPortEnable2        => '1',
+      PadPortJustif1        => '0',
+      PadPortStick1         => '0',
+      PadPortEnable2        => '0',
+      PadPortDigital2       => '1',
       PadPortAnalog2        => '0',
       PadPortMouse2         => '0', 
       PadPortGunCon2        => '0',
       PadPortneGcon2        => '0',
       PadPortWheel2         => '0',
       PadPortDS2            => '0',
-      PadPortDSA2           => '0',
+      PadPortJustif2        => '0',
+      PadPortStick2         => '0',
       KeyTriangle           => KeyTriangle,           
       KeyCircle             => KeyCircle,           
       KeyCross              => KeyCross,           
@@ -366,6 +432,7 @@ begin
       KeyL1                 => KeyL1,           
       KeyL2                 => KeyL2,           
       KeyL3                 => KeyL3,           
+      ToggleDS              => "0000",           
       Analog1XP1            => Analog1XP1,       
       Analog1YP1            => Analog1YP1,       
       Analog2XP1            => Analog2XP1,       
@@ -374,11 +441,30 @@ begin
       Analog1YP2            => Analog1YP2,
       Analog2XP2            => Analog2XP2,
       Analog2YP2            => Analog2YP2, 
+      Analog1XP3            => Analog1XP2,
+      Analog1YP3            => Analog1YP2,
+      Analog2XP3            => Analog2XP2,
+      Analog2YP3            => Analog2YP2, 
+      Analog1XP4            => Analog1XP2,
+      Analog1YP4            => Analog1YP2,
+      Analog2XP4            => Analog2XP2,
+      Analog2YP4            => Analog2YP2, 
+      multitap              => '0',
+      multitapDigital       => '0',
+      multitapAnalog        => '0',
       MouseEvent            => MouseEvent,
       MouseLeft             => MouseLeft,
       MouseRight            => MouseRight,
       MouseX                => MouseX,
       MouseY                => MouseY,
+      -- snac
+      snacPort1             => '0',
+      snacPort2             => '0',
+      irq10Snac             => '0',
+      actionNextSnac        => '0',
+      receiveValidSnac      => '0',
+      ackSnac               => '0',
+      receiveBufferSnac	    => x"00",
       -- sound              => -- sound       
       sound_out_left        => sound_out_left, 
       sound_out_right       => sound_out_right,
@@ -402,7 +488,8 @@ begin
    iddrram_model : entity tb.ddrram_model
    generic map
    (
-      SLOWTIMING => 20
+      SLOWTIMING   => 15,
+      RANDOMTIMING => '0' 
    )
    port map
    (
@@ -422,53 +509,73 @@ begin
    generic map
    (
       DOREFRESH     => '1',
-      SCRIPTLOADING => '1',
-      SLOWWRITE     => '0'
+      SCRIPTLOADING => '1'
    )
    port map
    (
-      clk          => clk33,
-      clk3x        => clk100,
-      refresh      => ram_refresh,
-      addr(26 downto 23) => "0000",
-      addr(22 downto  0) =>  ram_Adr,
-      req          => ram_ena,
-      ram_128      => ram_128,
-      rnw          => ram_rnw,
-      be           => ram_be,
-      di           => ram_dataWrite,
-      do           => ram_dataRead,
-      do32         => ram_dataRead32,
-      done         => ram_done,
-      reqprocessed => ram_reqprocessed,
-      ram_idle     => ram_idle
+      clk                  => clk33,
+      clk3x                => clk100,
+      refresh              => ram_refresh,
+      addr(26 downto 25)   => "00",
+      addr(24 downto  0)   => ram_Adr,
+      req                  => ram_ena,
+      ram_dma              => ram_dma,
+      ram_dmacnt           => ram_cntDMA,
+      ram_iscache          => ram_iscache,
+      rnw                  => ram_rnw,
+      be                   => ram_be,
+      di                   => ram_dataWrite,
+      do                   => open,
+      do32                 => ram_dataRead32,
+      done                 => ram_done,
+      cache_wr             => cache_wr,  
+      cache_data           => cache_data,
+      cache_addr           => cache_addr,
+      dma_wr               => dma_wr,  
+      dma_data             => dma_data,
+      reqprocessed         => dma_reqprocessed,
+      ram_idle             => open,
+      ram_dmafifo_adr      => ram_dmafifo_adr, 
+      ram_dmafifo_data     => ram_dmafifo_data,
+      ram_dmafifo_empty    => ram_dmafifo_empty,
+      ram_dmafifo_read     => ram_dmafifo_read,
+      exe_initial_pc       => exe_initial_pc,  
+      exe_initial_gp       => exe_initial_gp,  
+      exe_load_address     => exe_load_address,
+      exe_file_size        => exe_file_size,   
+      exe_stackpointer     => exe_stackpointer    
    );
    
    ispu_ram : entity work.sdram_model3x 
    generic map
    (
-      DOREFRESH     => '1',
+      DOREFRESH     => '0',
       SCRIPTLOADING => '0',
       INITFILE      => "R:\spu_ram_FPSXA.bin",
       FILELOADING   => '0'
    )
    port map
    (
-      clk          => clk33,
-      clk3x        => clk100,
-      refresh      => '0',
-      addr(26 downto 19) => "00000000",
-      addr(18 downto  0) =>  spuram_Adr,
-      req          => spuram_ena,
-      ram_128      => '0',
-      rnw          => spuram_rnw,
-      be           => spuram_be,
-      di           => spuram_dataWrite,
-      do           => open,
-      do32         => spuram_dataRead,
-      done         => spuram_done,
-      reqprocessed => open,
-      ram_idle     => open
+      clk                  => clk33,
+      clk3x                => clk100,
+      refresh              => '0',
+      addr(26 downto 19)   => "00000000",
+      addr(18 downto  0)   => spuram_Adr,
+      req                  => spuram_ena,
+      ram_dma              => '0',
+      ram_dmacnt           => "00",
+      ram_iscache          => '0',
+      rnw                  => spuram_rnw,
+      be                   => spuram_be,
+      di                   => spuram_dataWrite,
+      do                   => open,
+      do32                 => spuram_dataRead,
+      done                 => spuram_done,
+      reqprocessed         => open,
+      ram_idle             => open,
+      ram_dmafifo_adr      => (22 downto 0 => '0'),
+      ram_dmafifo_data     => (31 downto 0 => '0'),
+      ram_dmafifo_empty    => '1'
    );
    
       -- hps emulation
@@ -480,14 +587,15 @@ begin
    begin
 
       file_open(f_status, infile, "R:\cdtracks.txt", read_mode);
-   
       count := 1;
-      while (not endfile(infile)) loop
-         readline(infile,inLine);
-         tracknames(count) <= (others => ' ');
-         tracknames(count)(1 to inLine'length) <= inLine(1 to inLine'length); 
-         count := count + 1;
-      end loop;
+      if (f_status = open_ok) then 
+         while (not endfile(infile)) loop
+            readline(infile,inLine);
+            tracknames(count) <= (others => ' ');
+            tracknames(count)(1 to inLine'length) <= inLine(1 to inLine'length); 
+            count := count + 1;
+         end loop;
+      end if;
       trackcount <= count;
       
       file_close(infile);
@@ -538,33 +646,34 @@ begin
    begin
       
       if (cdLoaded = '0') then
-      
          file_open(f_status, infile, "R:\\cuedata.bin", read_mode);
+         if (f_status = open_ok) then 
          
-         targetpos := 0;
-         
-         while (not endfile(infile)) loop
+            targetpos := 0;
             
-            read(infile, next_int);  
+            while (not endfile(infile)) loop
+               
+               read(infile, next_int);  
+               
+               data(targetpos) := next_int;
+               targetpos       := targetpos + 1;
+   
+            end loop;
             
-            data(targetpos) := next_int;
-            targetpos       := targetpos + 1;
-
-         end loop;
-         
-         file_close(infile);
-         
-         wait for 10 us;
-         for i in 0 to 400 loop
-            trackinfo_data  <= std_logic_vector(to_signed(data(i), 32));
-            trackinfo_addr  <= std_logic_vector(to_unsigned(i, 9));
-            trackinfo_write <= '1';
-            wait until rising_edge(clk33);
-            trackinfo_write <= '0';
-            wait until rising_edge(clk33);
-         end loop;
-
-         cdLoaded <= '1';
+            file_close(infile);
+            
+            wait for 10 us;
+            for i in 0 to 400 loop
+               trackinfo_data  <= std_logic_vector(to_signed(data(i), 32));
+               trackinfo_addr  <= std_logic_vector(to_unsigned(i, 9));
+               trackinfo_write <= '1';
+               wait until rising_edge(clk33);
+               trackinfo_write <= '0';
+               wait until rising_edge(clk33);
+            end loop;
+   
+            cdLoaded <= '1';
+         end if; 
       end if;
    
    
@@ -595,7 +704,7 @@ begin
                file_close(infile);
             
             end if;
-
+      
          end if;
       end if;
       
@@ -632,25 +741,25 @@ begin
    begin
       if (0 = 1) then
       
-         wait for 5 ms;
+         wait for 2 ms;
          
-         memcard1_available <= '1';
-         memcard2_available <= '1';
+         memcard1_mounted <= '1';
+         --memcard2_mounted <= '1';
          memcard1_load      <= '1';
-         memcard2_load      <= '1';
+         --memcard2_load      <= '1';
          wait until rising_edge(clk33);
       
          memcard1_load      <= '0';
          memcard2_load      <= '0';
          wait until rising_edge(clk33);
       
-         wait for 25 ms;
-         
-         memcard_save       <= '1';
-         wait until rising_edge(clk33);
-      
-         memcard_save       <= '0';
-         wait until rising_edge(clk33);
+         --wait for 25 ms;
+         --
+         --memcard_save       <= '1';
+         --wait until rising_edge(clk33);
+         --
+         --memcard_save       <= '0';
+         --wait until rising_edge(clk33);
       
          wait;
       else
@@ -659,17 +768,53 @@ begin
    end process;
    
    process
+      variable data           : t_memdata := (others => 0);
+      file infile             : filetype;
+      variable f_status       : FILE_OPEN_STATUS;
+      variable next_int       : integer;
+      variable targetpos      : integer;
+      variable memdata        : std_logic_vector(31 downto 0);
    begin
+   
+      if (memcardLoaded = '0') then
+      
+         file_open(f_status, infile, "empty.mcd", read_mode);
+         
+         targetpos := 0;
+         
+         while (not endfile(infile)) loop
+            
+            read(infile, next_int);  
+            
+            data(targetpos) := next_int;
+            targetpos       := targetpos + 1;
+
+         end loop;
+         
+         file_close(infile);
+         
+         memcardLoaded <= '1';
+      end if;
+   
       wait until rising_edge(clk33);
    
       if (memcard1_rd = '1') then
          memcard1_ack <= '1';
          wait until rising_edge(clk33);
          
-         for i in 0 to 511 loop
+         for i in 0 to 255 loop
+            memdata := std_logic_vector(to_signed(data(to_integer(unsigned(memcard1_lba)) * 256 + i), 32));
+            
             memcard1_write  <= '1';
-            memcard1_dataIn <= std_logic_vector(to_unsigned(i, 16));
-            memcard1_addr   <= std_logic_vector(to_unsigned(i, 9));
+            memcard1_dataIn <= memdata(15 downto 0);
+            memcard1_addr   <= std_logic_vector(to_unsigned(i * 2 + 0, 9));
+            wait until rising_edge(clk33);
+            memcard1_write  <= '0';
+            wait until rising_edge(clk33);
+            
+            memcard1_write  <= '1';
+            memcard1_dataIn <= memdata(31 downto 16);
+            memcard1_addr   <= std_logic_vector(to_unsigned(i * 2 + 1, 9));
             wait until rising_edge(clk33);
             memcard1_write  <= '0';
             wait until rising_edge(clk33);
@@ -682,46 +827,23 @@ begin
          memcard1_ack <= '1';
          wait until rising_edge(clk33);
          
-         for i in 0 to 511 loop
-            memcard1_addr   <= std_logic_vector(to_unsigned(i, 9));
+         for i in 0 to 255 loop
+         
+            memcard1_addr   <= std_logic_vector(to_unsigned(i * 2 + 0, 9));
             wait until rising_edge(clk33);
+            memdata(15 downto 0) := memcard1_dataOut;
+            wait until rising_edge(clk33);
+            
+            memcard1_addr   <= std_logic_vector(to_unsigned(i * 2 + 1, 9));
+            wait until rising_edge(clk33);
+            memdata(31 downto 16) := memcard1_dataOut;
+            wait until rising_edge(clk33);
+            
+            data(to_integer(unsigned(memcard1_lba)) * 256 + i) := to_integer(signed(memdata));
+            
          end loop;
          
          memcard1_ack <= '0';
-      end if;
-         
-   end process;
-   
-   process
-   begin
-      wait until rising_edge(clk33);
-   
-      if (memcard2_rd = '1') then
-         memcard2_ack <= '1';
-         wait until rising_edge(clk33);
-         
-         for i in 0 to 511 loop
-            memcard2_write  <= '1';
-            memcard2_dataIn <= std_logic_vector(to_unsigned(i, 16));
-            memcard2_addr   <= std_logic_vector(to_unsigned(i, 9));
-            wait until rising_edge(clk33);
-            memcard2_write  <= '0';
-            wait until rising_edge(clk33);
-         end loop;
-         
-         memcard2_ack <= '0';
-      end if;
-      
-      if (memcard2_wr = '1') then
-         memcard2_ack <= '1';
-         wait until rising_edge(clk33);
-         
-         for i in 0 to 511 loop
-            memcard2_addr   <= std_logic_vector(to_unsigned(i, 9));
-            wait until rising_edge(clk33);
-         end loop;
-         
-         memcard2_ack <= '0';
       end if;
          
    end process;

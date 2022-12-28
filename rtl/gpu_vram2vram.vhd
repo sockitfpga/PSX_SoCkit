@@ -26,6 +26,8 @@ entity gpu_vram2vram is
       done                 : out std_logic := '0';
       CmdDone              : out std_logic := '0';
       
+      pipeline_busy        : in  std_logic;
+      fifoOut_idle         : in  std_logic;
       requestVRAMEnable    : out std_logic;
       requestVRAMXPos      : out unsigned(9 downto 0);
       requestVRAMYPos      : out unsigned(8 downto 0);
@@ -53,6 +55,7 @@ architecture arch of gpu_vram2vram is
       REQUESTWORD2,
       REQUESTWORD3,
       REQUESTWORD4,
+      REQUESTFIRST,
       READVRAM,
       WAITREAD,
       WAITIMING,
@@ -94,6 +97,17 @@ begin
       variable dstXCheck : unsigned(9 downto 0);
    begin
       if rising_edge(clk2x) then
+         
+         -- must be done here, so it also is effected when ce is off = paused
+         if (state = WAITREAD) then
+            if (requestVRAMDone = '1') then
+               if (REPRODUCIBLEGPUTIMING = '1') then
+                  state <= WAITIMING;
+               else
+                  state <= READFIRST;
+               end if;
+            end if;
+         end if;
          
          if (reset = '1') then
          
@@ -145,11 +159,16 @@ begin
                   
                   if (fifo_Valid = '1') then
                      CmdDone    <= '1';
-                     state      <= READVRAM;
+                     state      <= REQUESTFIRST;
                      widt       <= '0' & unsigned(fifo_data( 9 downto  0));
                      heig       <= '0' & unsigned(fifo_data(24 downto 16));
                      if (unsigned(fifo_data( 9 downto  0)) = 0) then widt <= to_unsigned(16#400#, 11); end if;
                      if (unsigned(fifo_data(24 downto 16)) = 0) then heig <= to_unsigned(16#200#, 10); end if;
+                  end if;
+                  
+               when REQUESTFIRST =>
+                  if (pipeline_busy = '0' and fifoOut_idle = '1') then
+                     state <= READVRAM;
                   end if;
                   
                when READVRAM =>
@@ -167,14 +186,7 @@ begin
                      drawTiming <= (others => '0');
                   end if;
                   
-               when WAITREAD =>
-                  if (requestVRAMDone = '1') then
-                     if (REPRODUCIBLEGPUTIMING = '1') then
-                        state <= WAITIMING;
-                     else
-                        state <= READFIRST;
-                     end if;
-                  end if;
+               when WAITREAD => null; -- handled outside due to ce
                   
                when WAITIMING =>
                   if (drawTiming >= 80) then

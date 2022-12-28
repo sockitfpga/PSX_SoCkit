@@ -14,6 +14,8 @@ entity gpu_videoout_async is
       ce_1x                   : in  std_logic;
       reset_1x                : in  std_logic;
       softReset_1x            : in  std_logic;
+      savestate_pause_1x      : in  std_logic;
+      system_paused_1x        : in  std_logic;
       
       allowunpause1x          : out std_logic;
       
@@ -25,6 +27,7 @@ entity gpu_videoout_async is
       
       videoout_readAddr       : out unsigned(10 downto 0) := (others => '0');
       videoout_pixelRead      : in  std_logic_vector(15 downto 0);
+      videoout_pixelRead2     : in  std_logic_vector(15 downto 0);
       
       overlay_data            : in  std_logic_vector(23 downto 0);
       overlay_ena             : in  std_logic;
@@ -54,7 +57,15 @@ architecture arch of gpu_videoout_async is
    
    signal softReset_s2         : std_logic;        
    signal softReset_s1         : std_logic;        
-   signal softReset            : std_logic;      
+   signal softReset            : std_logic;  
+
+   signal savestate_pause_s2   : std_logic;        
+   signal savestate_pause_s1   : std_logic;        
+   signal savestate_pause      : std_logic;    
+      
+   signal system_paused_s2     : std_logic;        
+   signal system_paused_s1     : std_logic;        
+   signal system_paused        : std_logic;    
    
    -- clkvid -> clk1x
    signal videoout_reports_s2  : tvideoout_reports;
@@ -72,58 +83,73 @@ architecture arch of gpu_videoout_async is
    signal videoout_request     : tvideoout_request := ('0', (others => '0'), (others => '0'), 0, (others => '0'));
    
    -- timing
-   signal lineMax          : integer range 0 to 512;
-   signal lineIn           : unsigned(8 downto 0) := (others => '0');
-   signal nextHCount       : integer range 0 to 4095;
-
-   signal vpos             : integer range 0 to 511;
-   signal vdisp            : integer range 0 to 511;
-   
-   signal nextHCount_pause : integer range 0 to 4095;
-   signal vpos_pause       : integer range 0 to 511;
-   signal field_pause      : std_logic := '0'; 
-   signal unpauseCnt       : integer range 0 to 3 := 0;
-   
-   signal htotal           : integer range 3406 to 3413;
-   signal vtotal           : integer range 262 to 314;
-   signal vDisplayStart    : integer range 0 to 314;
-   signal vDisplayEnd      : integer range 0 to 314;
-   signal vDisplayCnt      : integer range 0 to 314 := 0;
-   signal vDisplayMax      : integer range 0 to 314 := 239;
-   
-   signal InterlaceFieldN  : std_logic := '0';  
-   
-   signal vblankFixed      : std_logic := '0';   
-
-   signal noDraw           : std_logic := '0';  
-   signal newLineTrigger   : std_logic := '0';  
+   signal lineMax                      : integer range 0 to 512 := 512;
+   signal lineIn                       : unsigned(8 downto 0) := (others => '0');
+   signal nextHCount                   : integer range 0 to 4095;
+            
+   signal vpos                         : integer range 0 to 511;
+   signal vdisp                        : integer range 0 to 511;
+               
+   signal nextHCount_pause             : integer range 0 to 4095;
+   signal vpos_pause                   : integer range 0 to 511;
+   signal field_pause                  : std_logic := '0'; 
+   signal activeLSBpause               : std_logic := '0'; 
+   signal vdisp_pause                  : integer range 0 to 511;
+   signal inVsync_pause                : std_logic := '0';
+   signal GPUSTAT_InterlaceField_pause : std_logic := '0';
+   signal GPUSTAT_DrawingOddline_pause : std_logic := '0';
+   signal unpauseCnt                   : integer range 0 to 3 := 0;
+                 
+   signal htotal                       : integer range 3406 to 3413;
+   signal vtotal                       : integer range 262 to 314;
+   signal vDisplayStart                : integer range 0 to 314;
+   signal vDisplayEnd                  : integer range 0 to 314;
+   signal vDisplayCnt                  : integer range 0 to 314 := 0;
+   signal vDisplayMax                  : integer range 0 to 314 := 239;
+                 
+   signal InterlaceFieldN              : std_logic := '0';  
+   signal mode480i_1                   : std_logic := '0';  
+                 
+   signal vblankFixed                  : std_logic := '0';   
+              
+   signal noDraw                       : std_logic := '0';  
+   signal newLineTrigger               : std_logic := '0';  
+   signal nextLineCalcSaved            : unsigned(8 downto 0) := (others => '0');
    
    -- output   
    type tState is
    (
       WAITNEWLINE,
       WAITHBLANKEND,
+      WAITHBLANKENDVSYNC,
+      WAITINVSYNC,
       DRAW
    );
    signal state : tState := WAITNEWLINE;
    
-   signal pixelData_R      : std_logic_vector(7 downto 0) := (others => '0');
-   signal pixelData_G      : std_logic_vector(7 downto 0) := (others => '0');
-   signal pixelData_B      : std_logic_vector(7 downto 0) := (others => '0');
-      
-   signal clkDiv           : integer range 4 to 10 := 4; 
-   signal clkCnt           : integer range 0 to 10 := 0;
-   signal xmax             : integer range 0 to 1023 := 256;
-   signal xpos             : integer range 0 to 1023 := 256;
-   signal xCount           : integer range 0 to 1023 := 256;
-   signal readAddrCount    : unsigned(9 downto 0) := (others => '0');
-   signal rotate180        : std_logic;
-      
-   signal hsync_start      : integer range 0 to 4095;
-   signal hsync_end        : integer range 0 to 4095;
+   signal pixelData_R         : std_logic_vector(7 downto 0) := (others => '0');
+   signal pixelData_G         : std_logic_vector(7 downto 0) := (others => '0');
+   signal pixelData_B         : std_logic_vector(7 downto 0) := (others => '0');
    
-   signal hCropCount       : unsigned(11 downto 0);
-   signal hCropPixels      : unsigned(1 downto 0);
+   signal pixelDataDither_R   : std_logic_vector(7 downto 0) := (others => '0');
+   signal pixelDataDither_G   : std_logic_vector(7 downto 0) := (others => '0');
+   signal pixelDataDither_B   : std_logic_vector(7 downto 0) := (others => '0');
+      
+   signal clkDiv              : integer range 4 to 10 := 4; 
+   signal clkCnt              : integer range 0 to 10 := 0;
+   signal xmax                : integer range 0 to 1023 := 256;
+   signal xpos                : integer range 0 to 1023 := 256;
+   signal xCount              : integer range 0 to 1023 := 256;
+   signal readAddrCount       : unsigned(9 downto 0) := (others => '0');
+   signal rotate180           : std_logic := '0';
+   signal ditherCE            : std_logic := '0';
+   signal ditherFirstLine     : std_logic := '0';
+         
+   signal hsync_start         : integer range 0 to 4095;
+   signal hsync_end           : integer range 0 to 4095;
+      
+   signal hCropCount          : unsigned(11 downto 0) := (others => '0');
+   signal hCropPixels         : unsigned(1 downto 0) := (others => '0');
    
    type tReadState is
    (
@@ -161,6 +187,14 @@ begin
          softReset_s2         <= softReset_1x;
          softReset_s1         <= softReset_s2;
          softReset            <= softReset_s1;
+         
+         savestate_pause_s2   <= savestate_pause_1x;
+         savestate_pause_s1   <= savestate_pause_s2;
+         savestate_pause      <= savestate_pause_s1;           
+         
+         system_paused_s2     <= system_paused_1x;
+         system_paused_s1     <= system_paused_s2;
+         system_paused        <= system_paused_s1;   
    
       end if;
    end process;
@@ -195,34 +229,46 @@ begin
    end process;
    
    -- video timing
-   videoout_ss_out.interlacedDisplayField <= videoout_reports.interlacedDisplayField;                 
-   videoout_ss_out.nextHCount             <= std_logic_vector(to_unsigned(nextHCount, 12));                             
-   videoout_ss_out.vpos                   <= std_logic_vector(to_unsigned(vpos, 9));                            
-   videoout_ss_out.vdisp                  <= std_logic_vector(to_unsigned(vdisp, 9));                            
-   videoout_ss_out.inVsync                <= videoout_reports.inVsync;                                
-   videoout_ss_out.activeLineLSB          <= videoout_reports.activeLineLSB;                          
-   videoout_ss_out.GPUSTAT_InterlaceField <= videoout_reports.GPUSTAT_InterlaceField;
-   videoout_ss_out.GPUSTAT_DrawingOddline <= videoout_reports.GPUSTAT_DrawingOddline;
+   
+   -- savestates must save values when going into pause!
+   videoout_ss_out.interlacedDisplayField <= field_pause;                                         --videoout_reports.interlacedDisplayField;             
+   videoout_ss_out.nextHCount             <= std_logic_vector(to_unsigned(nextHCount_pause, 12)); --std_logic_vector(to_unsigned(nextHCount, 12));                             
+   videoout_ss_out.vpos                   <= std_logic_vector(to_unsigned(vpos_pause, 9));        --std_logic_vector(to_unsigned(vpos, 9));                            
+   videoout_ss_out.vdisp                  <= std_logic_vector(to_unsigned(vdisp_pause, 9));       --std_logic_vector(to_unsigned(vdisp, 9));                            
+   videoout_ss_out.inVsync                <= inVsync_pause;                                       --videoout_reports.inVsync;                                
+   videoout_ss_out.activeLineLSB          <= activeLSBpause;                                      --videoout_reports.activeLineLSB;                          
+   videoout_ss_out.GPUSTAT_InterlaceField <= GPUSTAT_InterlaceField_pause;                        --videoout_reports.GPUSTAT_InterlaceField;
+   videoout_ss_out.GPUSTAT_DrawingOddline <= GPUSTAT_DrawingOddline_pause;                        --videoout_reports.GPUSTAT_DrawingOddline;
 
    videoout_request.fetchsize <= to_unsigned(xmax, 10);
 
-   vDisplayStart <= to_integer(videoout_settings.vDisplayRange( 9 downto  0));
-   vDisplayEnd   <= to_integer(videoout_settings.vDisplayRange(19 downto 10));
+   videoout_reports.vsync    <= videoout_out.vsync;
+   videoout_reports.dotclock <= videoout_out.ce;
 
-   videoout_reports.vsync <= videoout_out.vsync;
-
+   videoout_out.isPal <= videoout_settings.GPUSTAT_PalVideoMode;
+   
+   videoout_out.DisplayWidthReal  <= to_unsigned(xmax, 10);
+   videoout_out.DisplayHeightReal <= to_unsigned(lineMax, 9);
+   
    process (clkvid)
-      variable mode480i                  : std_logic;
-      variable isVsync                   : std_logic;
-      variable vdispNew                  : integer range 0 to 511;
-      variable vblankFixedNew            : std_logic;
-      variable interlacedDisplayFieldNew : std_logic;
-      variable nextLineCalc              : unsigned(8 downto 0);
+      variable mode480i                      : std_logic;
+      variable isVsync                       : std_logic;
+      variable vdispNew                      : integer range 0 to 511;
+      variable vblankFixedNew                : std_logic;
+      variable interlacedDisplayFieldNew     : std_logic;
+      variable nextLineCalc                  : unsigned(8 downto 0);
+      variable pal60offset                   : integer range 0 to 128;
+      variable activeLineLSBMuxed            : std_logic;
+      variable interlacedDisplayFieldMuxed   : std_logic;
    begin
       if rising_edge(clkvid) then
       
-         if (videoout_out.isPal = '1') then
-            vDisplayMax <= 288;
+         if (videoout_settings.GPUSTAT_PalVideoMode = '1') then
+            if (videoout_settings.pal60 = '1') then
+               vDisplayMax <= 256;
+            else
+               vDisplayMax <= 288;
+            end if;
          else
             vDisplayMax <= 240;
          end if;
@@ -233,9 +279,20 @@ begin
             lineMax <= vDisplayEnd - vDisplayStart;
          end if;
          
-         newLineTrigger <= '0';
+         vDisplayStart <= to_integer(videoout_settings.vDisplayRange( 9 downto  0));
+         vDisplayEnd   <= to_integer(videoout_settings.vDisplayRange(19 downto 10));
+         if (videoout_settings.pal60 = '1' and videoout_settings.vDisplayRange(19 downto 10) > 260) then
+            pal60offset := to_integer(videoout_settings.vDisplayRange(19 downto 10)) - 260;
+            if (pal60offset < to_integer(videoout_settings.vDisplayRange( 9 downto  0))) then
+               vDisplayStart <= to_integer(videoout_settings.vDisplayRange( 9 downto  0)) - pal60offset;
+               vDisplayEnd   <= to_integer(videoout_settings.vDisplayRange(19 downto 10)) - pal60offset;
+            else
+               vDisplayStart <= 5;
+               vDisplayEnd   <= 260;
+            end if;
+         end if;
          
-         if (nextHCount <   3) then videoout_reports.hblank_tmr <= '1'; else videoout_reports.hblank_tmr <= '0'; end if; -- todo: correct hblank timer tick position to be found
+         newLineTrigger <= '0';
                 
          if (reset = '1') then
                
@@ -247,6 +304,7 @@ begin
             videoout_reports.inVsync                  <= videoout_ss_in.inVsync;
             videoout_reports.activeLineLSB            <= videoout_ss_in.activeLineLSB;
             videoout_reports.GPUSTAT_DrawingOddline   <= videoout_ss_in.GPUSTAT_DrawingOddline;
+            videoout_reports.GPUSTAT_InterlaceField   <= videoout_ss_in.GPUSTAT_InterlaceField;
             
             vdisp            <= to_integer(unsigned(videoout_ss_in.vdisp));
 
@@ -260,9 +318,14 @@ begin
          
             ce_1 <= ce;
             if (ce_1 = '1' and ce = '0') then
-               nextHCount_pause <= nextHCount;
-               vpos_pause       <= vpos;
-               field_pause      <= videoout_reports.interlacedDisplayField;
+               nextHCount_pause             <= nextHCount;
+               vpos_pause                   <= vpos;
+               field_pause                  <= videoout_reports.interlacedDisplayField;
+               activeLSBpause               <= videoout_reports.activeLineLSB;
+               vdisp_pause                  <= vdisp;                            
+               inVsync_pause                <= videoout_reports.inVsync;                                
+               GPUSTAT_InterlaceField_pause <= videoout_reports.GPUSTAT_InterlaceField;
+               GPUSTAT_DrawingOddline_pause <= videoout_reports.GPUSTAT_DrawingOddline;
             end if;
             
             if (unpauseCnt > 0) then
@@ -286,7 +349,6 @@ begin
                else
                   vtotal <= 312;
                end if;
-               videoout_out.isPal <= '1';
             else
                htotal <= 3413;
                if (videoout_settings.GPUSTAT_VertInterlace = '0' or InterlaceFieldN = '0' or videoout_settings.syncInterlace = '1') then
@@ -294,9 +356,21 @@ begin
                else
                   vtotal <= 262;
                end if;
-               videoout_out.isPal <= '0';
             end if;
             
+            -- variables can be calculated always
+            mode480i := '0';
+            if (videoout_settings.GPUSTAT_VerRes = '1' and videoout_settings.GPUSTAT_VertInterlace = '1') then mode480i := '1'; end if;
+            mode480i_1 <= mode480i;
+            
+            vdispNew := vdisp + 1;
+            
+            -- set interlace field when turning on interlaced mode based on odd/even frame
+            if (mode480i_1 = '0' and mode480i = '1') then
+               videoout_reports.interlacedDisplayField <= videoout_reports.GPUSTAT_DrawingOddline;
+               videoout_reports.GPUSTAT_InterlaceField <= videoout_reports.GPUSTAT_DrawingOddline;
+            end if;
+
             -- gpu timing count
             if (nextHCount > 1) then
                nextHCount <= nextHCount - 1;
@@ -310,13 +384,23 @@ begin
                end if;               
                
                -- todo: timer 1
-               
-               mode480i := '0';
-               if (videoout_settings.GPUSTAT_VerRes = '1' and videoout_settings.GPUSTAT_VertInterlace = '1') then mode480i := '1'; end if;
-               
-               vdispNew := vdisp + 1;
                if (videoout_out.vsync = '1') then
-                   vdispNew := 0;
+                  vdispNew := 0;
+               end if;
+               
+               -- synthesis translate_off
+               if (vdispNew >= vtotal) then
+                  vdispNew := 0; -- fix simulation issues with rollover
+               end if;
+               -- synthesis translate_on
+            
+
+               if (vdisp /= 0 and vdispNew = 0) then
+                  if (videoout_settings.GPUSTAT_VertInterlace = '1') then
+                     videoout_reports.GPUSTAT_InterlaceField <= not videoout_reports.GPUSTAT_InterlaceField;
+                  else
+                     videoout_reports.GPUSTAT_InterlaceField <= '0';
+                  end if;
                end if;
 
                vdisp <= vdispNew;
@@ -362,18 +446,18 @@ begin
                end if;
                videoout_reports.interlacedDisplayField <= interlacedDisplayFieldNew;
                
-             
-               videoout_reports.GPUSTAT_DrawingOddline <= '0';
                videoout_reports.activeLineLSB          <= '0';
                if (mode480i = '1') then
                   if (videoout_settings.vramRange(10) = '0' and interlacedDisplayFieldNew = '1') then videoout_reports.activeLineLSB <= '1'; end if;
                   if (videoout_settings.vramRange(10) = '1' and interlacedDisplayFieldNew = '0') then videoout_reports.activeLineLSB <= '1'; end if;
-               
-                  if (videoout_settings.vramRange(10) = '0' and isVsync = '0' and interlacedDisplayFieldNew = '1') then videoout_reports.GPUSTAT_DrawingOddline <= '1'; end if;
-                  if (videoout_settings.vramRange(10) = '1' and isVsync = '0' and interlacedDisplayFieldNew = '0') then videoout_reports.GPUSTAT_DrawingOddline <= '1'; end if;
                else
+                  videoout_reports.GPUSTAT_DrawingOddline <= '0';
                   if (videoout_settings.vramRange(10) = '0' and (vdispNew mod 2) = 1) then videoout_reports.GPUSTAT_DrawingOddline <= '1'; end if;
                   if (videoout_settings.vramRange(10) = '1' and (vdispNew mod 2) = 0) then videoout_reports.GPUSTAT_DrawingOddline <= '1'; end if;
+               end if;
+               
+               if (isVsync = '1') then
+                  videoout_reports.GPUSTAT_DrawingOddline <= '0';
                end if;
                
                -- fixed vblank 
@@ -400,12 +484,31 @@ begin
 
                newLineTrigger <= '1';
                
-               -- fetching of next line from framebuffer
                vdispNew := vdispNew + 1;
+               -- GPUSTAT_DrawingOddline in interlaced mode is set 1 line before vsync ends (tested on 7502 PAL console)
+               if (mode480i = '1') then
+                  if (vdispNew = vDisplayStart) then
+                     if (videoout_settings.vramRange(10) = '0' and videoout_reports.interlacedDisplayField = '1') then videoout_reports.GPUSTAT_DrawingOddline <= '1'; end if;
+                     if (videoout_settings.vramRange(10) = '1' and videoout_reports.interlacedDisplayField = '0') then videoout_reports.GPUSTAT_DrawingOddline <= '1'; end if;
+                  end if;
+                  if (vdispNew = vDisplayEnd or vdispNew = 0) then
+                     videoout_reports.GPUSTAT_DrawingOddline <= '0';
+                  end if;
+               end if;
+               
+               -- fetching of next line from framebuffer
+               activeLineLSBMuxed          := videoout_reports.activeLineLSB;
+               interlacedDisplayFieldMuxed := videoout_reports.interlacedDisplayField;
+               if (system_paused = '1') then
+                  activeLineLSBMuxed          := field_pause;   
+                  interlacedDisplayFieldMuxed := activeLSBpause;
+               end if;
+               
+               nextLineCalc := nextLineCalcSaved;
                if (vDisplayStart > 0) then
                   if (vdispNew >= vDisplayStart and vdispNew < vDisplayEnd) then
                      if (videoout_settings.GPUSTAT_VerRes = '1') then
-                        if ((videoout_reports.activeLineLSB xor videoout_settings.vramRange(10)) = '1') then
+                        if ((activeLineLSBMuxed xor videoout_settings.vramRange(10)) = '1') then
                            nextLineCalc := to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
                         else
                            nextLineCalc := to_unsigned((vdispNew - vDisplayStart) * 2, 9);
@@ -413,27 +516,27 @@ begin
                      else
                         nextLineCalc := to_unsigned(vdispNew - vDisplayStart, 9);
                      end if;
-                     videoout_request.fetch      <= ce;
+                     videoout_request.fetch      <= not savestate_pause;
                   end if;
                else  
                   if (vdispNew = vtotal) then
                      if (rotate180 = '1') then
-                        if (videoout_settings.GPUSTAT_VerRes = '1' and videoout_reports.interlacedDisplayField = '1') then
+                        if (videoout_settings.GPUSTAT_VerRes = '1' and interlacedDisplayFieldMuxed = '1') then
                            nextLineCalc := to_unsigned((lineMax - 2), 9);
                         else
                            nextLineCalc := to_unsigned((lineMax - 1), 9);
                         end if;
                      else
-                        if (videoout_settings.GPUSTAT_VerRes = '1' and videoout_reports.interlacedDisplayField = '1') then
+                        if (videoout_settings.GPUSTAT_VerRes = '1' and interlacedDisplayFieldMuxed = '1') then
                            nextLineCalc := to_unsigned(1, 9);
                         else
                            nextLineCalc := to_unsigned(0, 9);
                         end if;
                      end if;
-                     videoout_request.fetch      <= ce;
+                     videoout_request.fetch      <= not savestate_pause;
                   elsif (vdispNew >= vDisplayStart and vdispNew < vDisplayEnd) then
                      if (videoout_settings.GPUSTAT_VerRes = '1') then
-                        if ((videoout_reports.activeLineLSB xor videoout_settings.vramRange(10)) = '1') then
+                        if ((activeLineLSBMuxed xor videoout_settings.vramRange(10)) = '1') then
                            nextLineCalc := to_unsigned(((vdispNew - vDisplayStart) * 2) + 1, 9);
                         else
                            nextLineCalc := to_unsigned((vdispNew - vDisplayStart) * 2, 9);
@@ -441,9 +544,10 @@ begin
                      else
                         nextLineCalc := to_unsigned(vdispNew - vDisplayStart, 9);
                      end if;
-                     videoout_request.fetch      <= ce;
+                     videoout_request.fetch      <= not savestate_pause;
                   end if;
                end if;
+               nextLineCalcSaved <= nextLineCalc;
                
                if (rotate180 = '1') then
                   videoout_request.lineInNext <= to_unsigned((lineMax - 1), 9) - nextLineCalc;
@@ -454,6 +558,7 @@ begin
             end if;
             
             if (softReset = '1') then
+               videoout_reports.GPUSTAT_InterlaceField <= '1';
                videoout_reports.GPUSTAT_DrawingOddline <= '0';
                videoout_reports.irq_VBLANK             <= '0';
                
@@ -466,6 +571,25 @@ begin
          end if;
       end if;
    end process;
+   
+   
+   igpu_dither : entity work.gpu_dither
+   port map
+   (
+      clk       => clkvid,
+      ce        => ditherCE,
+ 
+      x         => xCount,
+      firstLine => ditherFirstLine,
+ 
+      din_r     => pixelData_R,
+      din_g     => pixelData_G,
+      din_b     => pixelData_B,
+ 
+      dout_r    => pixelDataDither_R,
+      dout_g    => pixelDataDither_G,
+      dout_b    => pixelDataDither_B
+   );
    
    -- timing generation reading
    videoout_out.vblank         <= vblankFixed when (videoout_settings.fixedVBlank = '1') else
@@ -487,6 +611,8 @@ begin
       if rising_edge(clkvid) then
          
          videoout_out.ce <= '0';
+         
+         ditherCE <= '0';
          
          rotate180 <= videoout_settings.rotate180 and (not videoout_settings.GPUSTAT_ColorDepth24);
          
@@ -522,16 +648,17 @@ begin
          
          if (reset = '1') then
          
-            state                      <= WAITNEWLINE;
-         
-            clkCnt                     <= 0;
-            videoout_out.hblank        <= '1';
-            videoout_out.vsync         <= '0';
-            videoout_request.lineDisp  <= (others => '0');
-            readstate                  <= IDLE;
+            state                       <= WAITNEWLINE;
+                                        
+            clkCnt                      <= 0;
+            videoout_out.hblank         <= '1';
+            videoout_out.vsync          <= '0';
+            videoout_request.lineDisp   <= (others => '0');
+            readstate                   <= IDLE;
+                                        
+            InterlaceFieldN             <= videoout_ss_in.GPUSTAT_InterlaceField;
             
-            videoout_reports.GPUSTAT_InterlaceField <= videoout_ss_in.GPUSTAT_InterlaceField;
-            InterlaceFieldN                         <= videoout_ss_in.GPUSTAT_InterlaceField;
+            videoout_reports.hblank_tmr <= '0'; 
          
          else
             
@@ -542,7 +669,7 @@ begin
                videoout_out.ce  <= '1';
             end if;
             
-            if (nextHCount = 1) then --clock divider reset at end of line
+            if (newLineTrigger = '1') then --clock divider reset at end of line
                clkCnt           <= 0;
             end if;
 
@@ -551,7 +678,8 @@ begin
             case (state) is
             
                when WAITNEWLINE =>
-                  videoout_out.hblank <= '1';
+                  videoout_out.hblank         <= '1';
+                  videoout_reports.hblank_tmr <= '1';
                   
                   nextLineCalc := to_unsigned((lineMax - 1), 9) - lineIn;
                   
@@ -564,7 +692,9 @@ begin
                         videoout_request.lineDisp <= nextLineCalc;
                      else
                         xpos                      <= 0;
-                        videoout_readAddr         <= lineIn(0) & "00" & x"00";
+                        -- must add lower 2 bits of display offset here as fetching from ddr3 vram is done in 64bits = 4 pixel steps
+                        -- so if image is shifted in steps below 4, it must be fetched with offset from linebuffer.
+                        videoout_readAddr         <= lineIn(0) & x"00" & videoout_out.DisplayOffsetX(1 downto 0);
                         videoout_request.lineDisp <= lineIn;
                      end if;
                     
@@ -589,22 +719,48 @@ begin
                      hCropPixels           <= (others => '0');
 
                      noDraw                <= '1';
-
+                     
+                  elsif (newLineTrigger = '1') then
+                     
+                     state                 <= WAITHBLANKENDVSYNC;
+                     hCropCount            <= (others => '0');
+                     hCropPixels           <= (others => '0');
+                     
                   end if;
             
-               when WAITHBLANKEND =>
+               when WAITHBLANKEND | WAITHBLANKENDVSYNC =>
                   if (clkCnt >= (clkDiv - 1)) then
                      if (hCropCount >= videoout_settings.hDisplayRange(11 downto 0)) then
-                        state       <= DRAW;
+                        if (state = WAITHBLANKENDVSYNC) then
+                           state <= WAITINVSYNC;
+                        else 
+                           state <= DRAW;
+                        end if;
                         readstate   <= IDLE;
                         readstate24 <= READ24_0;
                      end if;
                   end if;
                   
+               when WAITINVSYNC =>
+                  if (clkCnt >= (clkDiv - 1)) then
+                     videoout_reports.hblank_tmr <= '0'; 
+                     hCropPixels <= hCropPixels + 1;
+                     if (((hCropCount + 1) >= videoout_settings.hDisplayRange(23 downto 12))) then
+                        if ((hCropPixels + 1) = 0) then
+                           state <= WAITNEWLINE;
+                        end if;
+                     end if;
+                  end if;
+                  
                when DRAW =>
                   if (clkCnt >= (clkDiv - 1)) then
-                     videoout_out.hblank <= '0';
+                     videoout_out.hblank         <= '0';
+                     videoout_reports.hblank_tmr <= '0'; 
                      if (videoout_settings.fixedVBlank = '1' and vblankFixed = '1') then
+                        videoout_out.r      <= (others => '0');
+                        videoout_out.g      <= (others => '0');
+                        videoout_out.b      <= (others => '0');
+                     elsif (videoout_settings.hCrop = '1' and xCount >= videoout_out.DisplayWidth) then
                         videoout_out.r      <= (others => '0');
                         videoout_out.g      <= (others => '0');
                         videoout_out.b      <= (others => '0');
@@ -612,10 +768,14 @@ begin
                         videoout_out.r      <= overlay_data( 7 downto 0);
                         videoout_out.g      <= overlay_data(15 downto 8);
                         videoout_out.b      <= overlay_data(23 downto 16);
-                     elsif (videoout_settings.GPUSTAT_DisplayDisable = '1' or ce = '0' or noDraw = '1') then
+                     elsif (videoout_settings.GPUSTAT_DisplayDisable = '1' or savestate_pause = '1' or noDraw = '1') then
                         videoout_out.r      <= (others => '0');
                         videoout_out.g      <= (others => '0');
                         videoout_out.b      <= (others => '0');
+                     elsif (videoout_settings.dither24 = '1' and (videoout_settings.GPUSTAT_ColorDepth24 = '1' or videoout_settings.render24 = '1')) then
+                        videoout_out.r      <= pixelDataDither_R;
+                        videoout_out.g      <= pixelDataDither_G;
+                        videoout_out.b      <= pixelDataDither_B;                     
                      else
                         videoout_out.r      <= pixelData_R;
                         videoout_out.g      <= pixelData_G;
@@ -635,8 +795,9 @@ begin
                      hCropPixels <= hCropPixels + 1;
                      if (((hCropCount + 1) >= videoout_settings.hDisplayRange(23 downto 12))) then
                         if ((hCropPixels + 1) = 0) then
-                           state       <= WAITNEWLINE;
-                           xmax        <= xCount + 1;
+                           state           <= WAITNEWLINE;
+                           xmax            <= xCount + 1;
+                           ditherFirstLine <= '0';
                         end if;
                      end if;
                      
@@ -661,14 +822,21 @@ begin
                      when READ16 =>
                         readstate          <= IDLE;
                         readAddrCount      <= readAddrCount + 1;
+                        ditherCE           <= '1';
                         if (rotate180 = '1') then
                            videoout_readAddr  <= videoout_readAddr - 1;
                         else
                            videoout_readAddr  <= videoout_readAddr + 1;
                         end if;
-                        pixelData_R        <= videoout_pixelRead( 4 downto  0) & videoout_pixelRead( 4 downto 2);
-                        pixelData_G        <= videoout_pixelRead( 9 downto  5) & videoout_pixelRead( 9 downto 7);
-                        pixelData_B        <= videoout_pixelRead(14 downto 10) & videoout_pixelRead(14 downto 12);
+                        if (videoout_settings.render24 = '1') then
+                           pixelData_R        <= videoout_pixelRead( 4 downto  0) & videoout_pixelRead2(2 downto 0);
+                           pixelData_G        <= videoout_pixelRead( 9 downto  5) & videoout_pixelRead2(5 downto 3);
+                           pixelData_B        <= videoout_pixelRead(14 downto 10) & videoout_pixelRead2(8 downto 6);
+                        else
+                           pixelData_R        <= videoout_pixelRead( 4 downto  0) & videoout_pixelRead( 4 downto 2);
+                           pixelData_G        <= videoout_pixelRead( 9 downto  5) & videoout_pixelRead( 9 downto 7);
+                           pixelData_B        <= videoout_pixelRead(14 downto 10) & videoout_pixelRead(14 downto 12);
+                        end if; 
                         
                      when READ24_0 =>
                         readstate          <= READ24_16;
@@ -683,6 +851,7 @@ begin
                         readstate          <= IDLE;
                         readstate24        <= READ24_8;
                         pixelData_B        <= videoout_pixelRead( 7 downto  0);
+                        ditherCE           <= '1';
                   
                      when READ24_24 =>
                         readstate          <= IDLE;
@@ -690,6 +859,7 @@ begin
                         videoout_readAddr  <= videoout_readAddr + 1;
                         pixelData_G        <= videoout_pixelRead( 7 downto  0);
                         pixelData_B        <= videoout_pixelRead(15 downto  8);
+                        ditherCE           <= '1';
             
                   end case;
                
@@ -724,17 +894,12 @@ begin
             if (nextHCount = vsync_hstart) then
                if (vpos = vsync_vstart    ) then videoout_out.vsync <= '1'; end if;
                if (vpos = vsync_vstart + 3) then 
+                  ditherFirstLine    <= '1';
                   videoout_out.vsync <= '0'; 
-                  if (videoout_settings.GPUSTAT_VertInterlace = '1') then
-                     videoout_reports.GPUSTAT_InterlaceField <= not videoout_reports.GPUSTAT_InterlaceField;
-                  else
-                     videoout_reports.GPUSTAT_InterlaceField <= '0';
-                  end if;
                end if;
             end if;
             
             if (softReset = '1') then
-               videoout_reports.GPUSTAT_InterlaceField <= '1';
                InterlaceFieldN                         <= '1';
             end if;
          

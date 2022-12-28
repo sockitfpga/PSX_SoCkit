@@ -1,10 +1,8 @@
 vcom -93 -quiet -work  sim/mem ^
-../../rtl/SyncFifo.vhd ^
-../../rtl/SyncFifoFallThrough.vhd ^
-../../rtl/SyncRam.vhd
+../system/src/mem/dpram.vhd ^
+../system/src/mem/RamMLAB.vhd
 
 vcom -2008 -quiet -work sim/psx ^
-../../rtl/dpram.vhd ^
 ../../rtl/divider.vhd ^
 ../../rtl/pGPU.vhd ^
 ../../rtl/mul32u.vhd ^
@@ -18,6 +16,7 @@ vcom -2008 -quiet -work sim/psx ^
 ../../rtl/gpu_poly.vhd ^
 ../../rtl/gpu_pixelpipeline.vhd ^
 ../../rtl/gpu_overlay.vhd ^
+../../rtl/gpu_dither.vhd ^
 ../../rtl/gpu_videoout_async.vhd ^
 ../../rtl/gpu_videoout_sync.vhd ^
 ../../rtl/gpu_crosshair.vhd ^

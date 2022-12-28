@@ -95,7 +95,8 @@ begin
       
          if (nextHCount <   3) then videoout_reports.hblank_tmr <= '1'; else videoout_reports.hblank_tmr <= '0'; end if; -- todo: correct hblank timer tick position to be found
                 
-         videoout_reports.vsync <= '0';
+         videoout_reports.vsync    <= '0';
+         videoout_reports.dotclock <= '0';
          if (videoout_settings.GPUSTAT_VerRes = '1') then
             if (vsyncCount >= 5 and vsyncCount < 8) then videoout_reports.vsync <= '1'; end if;
          else
@@ -277,6 +278,9 @@ begin
    videoout_out.DisplayOffsetX <= videoout_settings.vramRange(9 downto 0);
    videoout_out.DisplayOffsetY <= videoout_settings.vramRange(18 downto 10);
    
+   videoout_out.DisplayWidthReal  <= videoout_out.DisplayWidth; 
+   videoout_out.DisplayHeightReal <= videoout_out.DisplayHeight;
+   
    process (clk2x)
    begin
       if rising_edge(clk2x) then
@@ -348,15 +352,17 @@ begin
                else
                   videoout_out.hblank <= '1';
                   if (videoout_out.hblank = '0') then
-                     hsync_start <= (nextHCount / 2) + (26 * clkDiv) - (8 * clkDiv);
-                     hsync_end   <= (nextHCount / 2) + (2 * clkDiv) - (8 * clkDiv);
+                     hsync_start <= (nextHCount / 2) + (16 * clkDiv);
+                     hsync_end   <= (nextHCount / 2);
                   end if;
                end if;
             end if;
             
             if (lineIn /= videoout_request.lineDisp) then
                videoout_request.lineDisp <= lineIn;
-               videoout_readAddr <= lineIn(0) & "00" & x"00";
+               -- must add lower 2 bits of display offset here as fetching from ddr3 vram is done in 64bits = 4 pixel steps
+               -- so if image is shifted in steps below 4, it must be fetched with offset from linebuffer.
+               videoout_readAddr         <= lineIn(0) & x"00" & videoout_out.DisplayOffsetX(1 downto 0);
                if (videoout_settings.GPUSTAT_VerRes = '1') then -- interlaced mode
                   videoout_readAddr(10) <= lineIn(1);
                end if;

@@ -19,6 +19,7 @@ entity memcard is
       anyChange            : in  std_logic;
       
       changePending        : out std_logic;
+      saving_memcard       : out std_logic := '0';
       
       mem_request          : out std_logic := '0';
       mem_BURSTCNT         : out std_logic_vector(7 downto 0) := (others => '0'); 
@@ -102,11 +103,12 @@ begin
 
          if (reset = '1') then
          
-            state       <= IDLE;
-            memcard_rd  <= '0';
-            memcard_wr  <= '0';            
+            state          <= IDLE;
+            memcard_rd     <= '0';
+            memcard_wr     <= '0';            
             
-            pause        <= '0';
+            pause          <= '0';
+            saving_memcard <= '0';
 
          else
          
@@ -115,13 +117,13 @@ begin
                   if (loadLatched = '1' and mounted = '1') then
                      state        <= LOAD_WAITPAUSED;
                      pause        <= '1';
-                     loadLatched  <= '0';
                      anyChangeBuf <= '0';
                   elsif (saveLatched = '1') then
                      if (anyChangeBuf = '1') then
-                        state        <= SAVE_WAITPAUSED;
-                        pause        <= '1';
-                        anyChangeBuf <= '0';
+                        state          <= SAVE_WAITPAUSED;
+                        pause          <= '1';
+                        anyChangeBuf   <= '0';
+                        saving_memcard <= '1';
                      end if;
                      saveLatched  <= '0';
                   end if;
@@ -167,8 +169,9 @@ begin
                      mem_request <= '0';
                      if (unsigned(mem_addrA) = 127) then
                         if (blockCnt = 127) then
-                           state <= IDLE;
-                           pause <= '0';
+                           state        <= IDLE;
+                           pause        <= '0';
+                           loadLatched  <= '0';
                         else
                            blockCnt <= blockCnt + 1;
                            state    <= LOAD_REQREAD;
@@ -230,8 +233,9 @@ begin
                   mem_addrA <= (others => '0');
                   if (memcard_ack = '0') then 
                      if (blockCnt = 127) then
-                        state <= IDLE;
-                        pause <= '0';
+                        state          <= IDLE;
+                        pause          <= '0';
+                        saving_memcard <= '0';
                      else
                         blockCnt <= blockCnt + 1;
                         state    <= SAVE_REQDATA;

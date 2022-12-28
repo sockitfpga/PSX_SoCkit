@@ -60,6 +60,7 @@ set_global_assignment -name OUTPUT_IO_TIMING_FAR_END_VMEAS "HALF SIGNAL SWING" -
 set_global_assignment -name ACTIVE_SERIAL_CLOCK FREQ_100MHZ
 
 set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
+set_global_assignment -name VERILOG_MACRO "MISTER_DOWNSCALE_NN=1"
 
 source sys/sys.tcl
 source sys/sys_analog.tcl
